@@ -1,0 +1,13 @@
+[package]
+name = "ferry"
+version = "0.1.0"
+edition = "2024"
+description = "Repackage Debian .deb files as pacman packages and keep them updated"
+publish = false
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

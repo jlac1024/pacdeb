@@ -1,0 +1,7 @@
+# Built in Debian to Arch dependency names, compiled into the binary.
+# Users can override entries in ~/.config/ferry/depmap.toml.
+#
+# Format: "debian-name" = "arch-name"
+# Use an empty string to drop a dependency that Arch does not need.
+
+[map]
