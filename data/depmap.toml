@@ -2,6 +2,8 @@
 # Users can override entries in ~/.config/ferry/depmap.toml.
 #
 # Format: "debian-name" = "arch-name"
+# Several Arch packages are separated by spaces, for Debian packages whose own
+# dependencies bring in more than the Arch package does.
 # Use an empty string for a dependency Arch does not need; that drops the whole
 # alternative group it appears in.
 # The "t64" names are Debian's 64 bit time_t renames of the same libraries.
@@ -138,8 +140,15 @@
 
 # X servers, sessions and auth (Chrome Remote Desktop)
 "xvfb" = "xorg-server-xvfb"
-"xserver-xorg-video-dummy" = "xf86-video-dummy"
+# Debian's dummy driver pulls in the X server; Arch's does not.
+"xserver-xorg-video-dummy" = "xf86-video-dummy xorg-server"
 "xauth" = "xorg-xauth"
+# Debian bundles of the standard X tools; Arch ships each tool on its own.
+"x11-utils" = "xorg-xdpyinfo xorg-xprop xorg-xwininfo"
+"x11-xserver-utils" = "xorg-xrandr xorg-xset"
+"x11-xkb-utils" = "xorg-setxkbmap xorg-xkbcomp"
+"xbase-clients" = "xorg-xdpyinfo xorg-xrandr xorg-setxkbmap xorg-xauth xorg-xset"
+"xserver-xorg-core" = "xorg-server"
 "pkexec" = "polkit"
 "policykit-1" = "polkit"
 "libpam0g" = "pam"

@@ -126,9 +126,11 @@ pub fn translate(
     let mut choices: Vec<String> = Vec::new();
     for (_, _, groups) in &parsed {
         for g in groups.iter().filter(|g| g.len() > 1) {
-            for m in g.iter().filter_map(|a| resolve(&a.name)).filter(|m| !m.is_empty()) {
-                if !choices.contains(&m) {
-                    choices.push(m);
+            for m in g.iter().filter_map(|a| resolve(&a.name)) {
+                for part in m.split_whitespace() {
+                    if !choices.iter().any(|c| c == part) {
+                        choices.push(part.to_string());
+                    }
                 }
             }
         }
@@ -149,7 +151,7 @@ pub fn translate(
             }
             let (atom, arch) = mapped
                 .iter()
-                .find(|(_, m)| !m.is_empty() && installed.contains(m))
+                .find(|(_, m)| !m.is_empty() && m.split_whitespace().all(|p| installed.contains(p)))
                 .cloned()
                 .unwrap_or((first_atom, first.clone()));
             if arch != first {
@@ -161,12 +163,15 @@ pub fn translate(
             if atom.version.is_some() {
                 constraints.push(atom.to_string());
             }
-            match *optional {
-                None if !deps.depends.contains(&arch) => deps.depends.push(arch),
-                Some(reason) if !deps.depends.contains(&arch) && !deps.optdepends.iter().any(|(p, _)| *p == arch) => {
-                    deps.optdepends.push((arch, reason.to_string()));
+            // One Debian package can need several Arch ones, written space separated.
+            for part in arch.split_whitespace().map(String::from) {
+                match *optional {
+                    None if !deps.depends.contains(&part) => deps.depends.push(part),
+                    Some(reason) if !deps.depends.contains(&part) && !deps.optdepends.iter().any(|(p, _)| *p == part) => {
+                        deps.optdepends.push((part, reason.to_string()));
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -292,7 +297,10 @@ mod tests {
             assert_eq!(m.get(deb), Some(arch), "{deb}");
         }
         for (deb, arch) in &m.map {
-            assert!(!arch.contains(char::is_whitespace), "{deb} maps to '{arch}'");
+            for part in arch.split_whitespace() {
+                assert!(part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "@._+-".contains(c)), "{deb} maps to '{arch}'");
+            }
+            assert!(!arch.starts_with(' ') && !arch.ends_with(' ') && !arch.contains("  "), "{deb} maps to '{arch}'");
         }
     }
 
