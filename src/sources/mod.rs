@@ -42,7 +42,7 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
     let fill_opt = |s: &Option<String>| -> Result<Option<String>> { s.as_deref().map(fill).transpose() };
 
     match source {
-        SourceConfig::Direct { url, feed, version_json, version_pattern, url_json, checksum_json, .. } => {
+        SourceConfig::Direct { url, feed, version_json, version_pattern, version_regex, url_json, checksum_json, .. } => {
             let url = fill_opt(url)?;
             let Some(feed) = fill_opt(feed)? else {
                 let Some(url) = url else {
@@ -55,11 +55,13 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
                 return Ok(Latest { url: Some(url), head: Some(head), ..Latest::default() });
             };
             let text = net::get_text(&feed, &[])?;
-            let (vj, vp, uj, cj) = (fill_opt(version_json)?, fill_opt(version_pattern)?, fill_opt(url_json)?, fill_opt(checksum_json)?);
+            let (vj, vp, vr) = (fill_opt(version_json)?, fill_opt(version_pattern)?, fill_opt(version_regex)?);
+            let (uj, cj) = (fill_opt(url_json)?, fill_opt(checksum_json)?);
             let spec = direct::FeedSpec {
                 url: url.as_deref(),
                 version_json: vj.as_deref(),
                 version_pattern: vp.as_deref(),
+                version_regex: vr.as_deref(),
                 url_json: uj.as_deref(),
                 checksum_json: cj.as_deref(),
             };
@@ -153,6 +155,7 @@ mod tests {
             feed: Some("https://example.invalid/{channel}.json".into()),
             version_json: None,
             version_pattern: None,
+            version_regex: None,
             url_json: None,
             checksum_json: None,
             default_channel: None,
