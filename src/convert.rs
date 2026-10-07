@@ -9,8 +9,10 @@ use crate::build;
 use crate::deb::Deb;
 use crate::error::{Context, Result};
 use crate::human;
-use crate::model::NodeKind;
+use crate::model::{NodeKind, Package};
 use crate::paths::Paths;
+use crate::registry::{App, AppState};
+use crate::version::{ArchVersion, DebVersion};
 use crate::style::Style;
 use crate::translate::{self, Action, Outcome, Tables, Translation, Warning};
 
@@ -36,13 +38,57 @@ pub fn run(opts: &Options) -> Result<()> {
         let _ = std::io::stdout().write_all(text.as_bytes());
         return Ok(());
     }
-    let built = build_package(&opts.deb, opts.direct, opts.out.as_deref())?;
-    println!("{} {}", Style::for_stdout().good("Built"), built.display());
+    let built = build_package(&opts.deb, opts.direct, opts.out.as_deref(), None, None)?;
+    println!("{} {}", Style::for_stdout().good("Built"), built.path.display());
     Ok(())
 }
 
-/// Translates and builds a deb, printing the warnings first. Returns the package path.
-pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Result<PathBuf> {
+/// A finished build and the versions that went into it.
+pub struct Built {
+    pub path: PathBuf,
+    pub deb_version: String,
+    pub pkgrel: u32,
+}
+
+/// The pkgrel for a new build: 1 for a new upstream version, one more than last time
+/// when the same upstream version comes in a different deb, unchanged when the deb is
+/// the same one again.
+pub fn next_pkgrel(prev: Option<&AppState>, deb_version: &DebVersion, pkgver: &str) -> u32 {
+    let Some(prev) = prev else {
+        return 1;
+    };
+    let Some(prev_deb) = prev.deb_version.as_deref().and_then(|v| DebVersion::parse(v).ok()) else {
+        return 1;
+    };
+    let prev_pkgver = ArchVersion::from_debian(&prev_deb, 1).pkgver;
+    if prev_deb == *deb_version && prev_deb.to_string() == deb_version.to_string() {
+        prev.pkgrel.max(1)
+    } else if prev_pkgver == pkgver && prev_deb.epoch == deb_version.epoch {
+        prev.pkgrel.max(1) + 1
+    } else {
+        1
+    }
+}
+
+/// Per app settings that change the package: name, provides, conflicts, deps.
+pub fn apply_overrides(p: &mut Package, app: &App) {
+    if let Some(name) = &app.pkgname {
+        p.name = name.clone();
+    }
+    p.provides.extend(app.provides.iter().cloned());
+    p.conflicts.extend(app.conflicts.iter().cloned());
+    for d in &app.extra_depends {
+        if !p.depends.contains(d) {
+            p.depends.push(d.clone());
+        }
+    }
+    p.depends.retain(|d| !app.drop_depends.contains(d));
+    p.optdepends.retain(|(d, _)| !app.drop_depends.contains(d));
+}
+
+/// Translates and builds a deb, printing the warnings first. `app` and `prev` are the
+/// tracked app's settings and last build, when there is one.
+pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Option<&App>, prev: Option<&AppState>) -> Result<Built> {
     let direct = direct || {
         let missing = !build::makepkg_available();
         if missing {
@@ -53,7 +99,11 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Resul
     let paths = Paths::from_env()?;
     let tables = Tables::load(&paths.config)?;
     let mut deb = Deb::open(deb_path)?;
-    let t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(deb_path.display())?;
+    let mut t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(deb_path.display())?;
+    t.package.version.pkgrel = next_pkgrel(prev, &t.package.deb_version, &t.package.version.pkgver);
+    if let Some(app) = app {
+        apply_overrides(&mut t.package, app);
+    }
 
     let p = &t.package;
     let style = Style::for_stdout();
@@ -67,11 +117,13 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Resul
         Some(o) => std::path::absolute(o).context(o.display())?,
         None => paths.packages_dir(),
     };
-    if direct {
-        return build::direct(&mut deb, p, &paths.work_dir(), &out_dir);
-    }
-    let origin = deb_path.file_name().map_or_else(|| deb_path.display().to_string(), |n| n.to_string_lossy().into_owned());
-    build::with_makepkg(&mut deb, p, &origin, &paths.work_dir(), &out_dir)
+    let path = if direct {
+        build::direct(&mut deb, p, &paths.work_dir(), &out_dir)?
+    } else {
+        let origin = deb_path.file_name().map_or_else(|| deb_path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        build::with_makepkg(&mut deb, p, &origin, &paths.work_dir(), &out_dir)?
+    };
+    Ok(Built { path, deb_version: p.deb_version.to_string(), pkgrel: p.version.pkgrel })
 }
 
 /// Warnings grouped by kind, with script lines left out for system reasons grouped
@@ -316,6 +368,47 @@ mod tests {
     use crate::deb::testutil::{DebBuilder, TestEntry};
     use crate::translate::tests::BareSystem;
     use std::io::Cursor;
+
+    #[test]
+    fn counts_pkgrel() {
+        let prev = |v: &str, rel: u32| AppState { deb_version: Some(v.into()), pkgrel: rel, ..Default::default() };
+        let rel = |p: Option<&AppState>, v: &str| {
+            let d = DebVersion::parse(v).unwrap();
+            next_pkgrel(p, &d, &ArchVersion::from_debian(&d, 1).pkgver)
+        };
+        let cases: &[(Option<AppState>, &str, u32)] = &[
+            (None, "1.0-1", 1),
+            (Some(prev("1.0-1", 1)), "1.0-1", 1),
+            (Some(prev("1.0-1", 3)), "1.0-1", 3),
+            (Some(prev("1.0-1", 1)), "1.0-2", 2),
+            (Some(prev("1.0-2", 2)), "1.0-3", 3),
+            (Some(prev("1.0-3", 3)), "1.1-1", 1),
+            (Some(prev("1:1.0-1", 1)), "1.0-1", 1),
+            (Some(AppState::default()), "1.0", 1),
+        ];
+        for (p, v, want) in cases {
+            assert_eq!(rel(p.as_ref(), v), *want, "{p:?} -> {v}");
+        }
+    }
+
+    #[test]
+    fn applies_app_overrides() {
+        let bytes = DebBuilder::new("Package: demo\nVersion: 1.0\nArchitecture: amd64\nDepends: libnss3, libnotify4\nRecommends: pulseaudio\n").build();
+        let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
+        let mut p = translate::translate(&mut deb, &translate::Tables::builtin(), 1, &BareSystem).unwrap().package;
+        let mut app = App::new(crate::registry::SourceConfig::Manual {});
+        app.pkgname = Some("demo-deb".into());
+        app.provides = vec!["demo".into()];
+        app.conflicts = vec!["demo-bin".into()];
+        app.extra_depends = vec!["gtk3".into()];
+        app.drop_depends = vec!["libnotify".into(), "libpulse".into()];
+        apply_overrides(&mut p, &app);
+        assert_eq!(p.name, "demo-deb");
+        assert_eq!(p.provides, ["demo"]);
+        assert_eq!(p.conflicts, ["demo-bin"]);
+        assert_eq!(p.depends, ["nss", "gtk3"]);
+        assert!(p.optdepends.is_empty());
+    }
 
     #[test]
     fn reports_a_dry_run() {

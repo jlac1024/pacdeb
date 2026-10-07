@@ -16,6 +16,7 @@ mod relation;
 mod sources;
 mod style;
 mod translate;
+mod update;
 mod version;
 
 use std::process::ExitCode;

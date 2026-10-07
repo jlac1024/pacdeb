@@ -43,7 +43,7 @@ Environment:
   FERRY_GITHUB_TOKEN  Token for GitHub API requests
 ";
 
-const UNFINISHED: &[&str] = &["update"];
+
 
 pub fn run(args: &[String]) -> ExitCode {
     let Some(first) = args.first() else {
@@ -63,6 +63,7 @@ pub fn run(args: &[String]) -> ExitCode {
         "inspect" => inspect(&args[1..]),
         "convert" => convert(&args[1..]),
         "install" => install(&args[1..]),
+        "update" => update(&args[1..]),
         "add" => registry_cmd(&args[1..], "usage: ferry add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
             [name] => crate::apps::add(name, f),
             _ => Err(crate::error::Error::new("usage: ferry add <name> [--preset <p> | --source <type>] [options]")),
@@ -85,10 +86,6 @@ pub fn run(args: &[String]) -> ExitCode {
             [name] if !name.starts_with('-') => finish(crate::apps::check(Some(name))),
             _ => usage_error("usage: ferry check [name]"),
         },
-        cmd if UNFINISHED.contains(&cmd) => {
-            eprintln!("ferry: '{cmd}' is not implemented yet");
-            ExitCode::FAILURE
-        }
         other => {
             eprintln!("ferry: unknown command '{other}'. Run 'ferry --help' for the list.");
             ExitCode::from(2)
@@ -148,14 +145,33 @@ fn install(args: &[String]) -> ExitCode {
     let Some(target) = target else {
         return usage_error(INSTALL_USAGE);
     };
-    if !target.exists() && target.extension().is_none_or(|e| e != "deb") {
-        eprintln!("ferry: installing an app by name needs the app registry, which is not implemented yet; pass a .deb file");
-        return ExitCode::FAILURE;
+    // A path to a file is a deb; anything else is a tracked app's name.
+    if target.exists() || target.extension().is_some_and(|e| e == "deb") {
+        finish(crate::update::install_file(&target, direct))
+    } else {
+        finish(crate::update::install_app(&target.to_string_lossy(), direct))
     }
-    finish(crate::convert::build_package(&target, direct, None).and_then(|pkg| {
-        println!("{} {}", crate::style::Style::for_stdout().good("Built"), pkg.display());
-        crate::install::install(&pkg)
-    }))
+}
+
+const UPDATE_USAGE: &str = "usage: ferry update [name] [--file <file.deb>] [--direct] [--no-install]";
+
+fn update(args: &[String]) -> ExitCode {
+    let mut opts = crate::update::Options { name: None, file: None, direct: false, no_install: false };
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--direct" => opts.direct = true,
+            "--no-install" => opts.no_install = true,
+            "--file" => match it.next() {
+                Some(f) => opts.file = Some(PathBuf::from(f)),
+                None => return usage_error(&format!("--file needs a .deb. {UPDATE_USAGE}")),
+            },
+            s if s.starts_with('-') => return usage_error(&format!("unknown option '{s}'. {UPDATE_USAGE}")),
+            s if opts.name.is_none() => opts.name = Some(s.to_string()),
+            s => return usage_error(&format!("unexpected argument '{s}'. {UPDATE_USAGE}")),
+        }
+    }
+    finish(crate::update::update(&opts))
 }
 
 /// Parses add/set style arguments and runs the command with them.
