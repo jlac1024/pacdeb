@@ -163,7 +163,7 @@ mod tests {
         let mut p = package();
         let changes = Fixes::builtin().apply("chrome-remote-desktop", &mut p).unwrap();
         assert_eq!(changes.len(), 2, "{changes:?}");
-        assert!(changes.iter().any(|c| c.starts_with("added /usr/lib/systemd/system/chrome-remote-desktop@.service.d/10-ferry.conf")));
+        assert!(changes.iter().any(|c| c.starts_with("added /usr/lib/systemd/system/chrome-remote-desktop@.service.d/10-pacdeb.conf")));
         assert!(changes.iter().any(|c| c.starts_with("replaced /opt/google/chrome-remote-desktop/Xsession")));
 
         let xsession = p.nodes.iter().find(|n| n.path.ends_with("/Xsession")).unwrap();
@@ -171,7 +171,7 @@ mod tests {
         let Source::Inline(bytes) = &xsession.source else { panic!("not replaced") };
         assert!(bytes.starts_with(b"#!/bin/bash\n"), "{}", String::from_utf8_lossy(bytes));
 
-        let dropin = p.nodes.iter().find(|n| n.path.ends_with("10-ferry.conf")).unwrap();
+        let dropin = p.nodes.iter().find(|n| n.path.ends_with("10-pacdeb.conf")).unwrap();
         let Source::Inline(bytes) = &dropin.source else { panic!() };
         assert!(String::from_utf8_lossy(bytes).contains("Environment=CHROME_REMOTE_DESKTOP_USE_XVFB=1"));
 

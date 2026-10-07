@@ -1,4 +1,4 @@
-//! `ferry convert`: turn a .deb into a pacman package, or with --dry-run, print what
+//! `pacdeb convert`: turn a .deb into a pacman package, or with --dry-run, print what
 //! would be built and everything that needs attention.
 
 use std::fmt::Write as _;
@@ -29,7 +29,7 @@ pub fn run(opts: &Options) -> Result<()> {
         let tables = Tables::load(&paths.config)?;
         let mut deb = Deb::open(&opts.deb)?;
         let t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(opts.deb.display())?;
-        let backend = if opts.direct { "direct (.pkg.tar.zst written by Ferry)" } else { "makepkg (PKGBUILD)" };
+        let backend = if opts.direct { "direct (.pkg.tar.zst written by pacdeb)" } else { "makepkg (PKGBUILD)" };
         let mut text = format!("Backend: {backend}\n");
         if let Some(out) = &opts.out {
             writeln!(text, "Output:  {}", out.display()).unwrap();
@@ -92,7 +92,7 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
     let direct = direct || {
         let missing = !build::makepkg_available();
         if missing {
-            println!("makepkg was not found, so Ferry writes the package itself (--direct)");
+            println!("makepkg was not found, so pacdeb writes the package itself (--direct)");
         }
         missing
     };
@@ -110,7 +110,7 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
     println!("Building {} {} from {}", style.bold(&p.name), p.version, deb_path.display());
     if !t.warnings.is_empty() {
         print!("\n{}", render_warnings(&t.warnings, style));
-        println!("\n{}\n", style.dim(&format!("Full report: ferry convert --dry-run {}", deb_path.display())));
+        println!("\n{}\n", style.dim(&format!("Full report: pacdeb convert --dry-run {}", deb_path.display())));
     }
 
     let out_dir = match out {
@@ -176,7 +176,7 @@ pub fn render_warnings(ws: &[Warning], st: Style) -> String {
         })
         .collect();
     if !untranslated.is_empty() {
-        writeln!(out, "\n  {}", st.bold("Script lines Ferry could not translate (check them by hand):")).unwrap();
+        writeln!(out, "\n  {}", st.bold("Script lines pacdeb could not translate (check them by hand):")).unwrap();
         for (a, text, why) in untranslated {
             writeln!(out, "    {}  {text}", st.dim(&pad(a))).unwrap();
             writeln!(out, "    {:width$}  {}", "", st.dim(why)).unwrap();
@@ -431,7 +431,7 @@ mod tests {
             "  postinst line 4: frobnicate\n    -> NOT TRANSLATED: no translation for this command\n",
             "Libraries the binaries load:\n  no dynamically linked binaries found\n",
             "\n2 warnings\n",
-            "  Script lines Ferry could not translate (check them by hand):\n    postinst:4  frobnicate\n                no translation for this command\n",
+            "  Script lines pacdeb could not translate (check them by hand):\n    postinst:4  frobnicate\n                no translation for this command\n",
             "  Dependencies with no Arch name, left out (map them in depmap.toml if needed):\n    libodd1  (Depends)\n",
         ] {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");

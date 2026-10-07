@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// A plain error message. Ferry reports errors to a person, so a readable chain of
+/// A plain error message. pacdeb reports errors to a person, so a readable chain of
 /// context is more useful than typed variants.
 #[derive(Debug)]
 pub struct Error(String);

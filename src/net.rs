@@ -48,7 +48,7 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(30)))
         .timeout_recv_response(Some(Duration::from_secs(60)))
-        .user_agent(concat!("ferry/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("pacdeb/", env!("CARGO_PKG_VERSION")))
         .build()
         .into()
 }

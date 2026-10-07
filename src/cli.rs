@@ -4,9 +4,9 @@ use std::process::ExitCode;
 use crate::error::Result;
 
 const USAGE: &str = "\
-ferry: turn Debian .deb packages into pacman packages and keep them updated
+pacdeb: turn Debian .deb packages into pacman packages and keep them updated
 
-Usage: ferry <command> [options]
+Usage: pacdeb <command> [options]
 
 Commands:
   inspect <file.deb>                 Show control fields, files, scripts and dep mapping
@@ -40,9 +40,9 @@ Options:
   -V, --version                      Show the version
 
 Environment:
-  FERRY_HOME          Put config, state and cache under one directory
-  FERRY_INSTALL_CMD   Command used instead of sudo pacman -U
-  FERRY_GITHUB_TOKEN  Token for GitHub API requests
+  PACDEB_HOME          Put config, state and cache under one directory
+  PACDEB_INSTALL_CMD   Command used instead of sudo pacman -U
+  PACDEB_GITHUB_TOKEN  Token for GitHub API requests
 ";
 
 
@@ -59,37 +59,37 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         "-V" | "--version" => {
-            println!("ferry {}", env!("CARGO_PKG_VERSION"));
+            println!("pacdeb {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         "inspect" => inspect(&args[1..]),
         "convert" => convert(&args[1..]),
         "install" => install(&args[1..]),
         "update" => update(&args[1..]),
-        "add" => registry_cmd(&args[1..], "usage: ferry add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
+        "add" => registry_cmd(&args[1..], "usage: pacdeb add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
             [name] => crate::apps::add(name, f),
-            _ => Err(crate::error::Error::new("usage: ferry add <name> [--preset <p> | --source <type>] [options]")),
+            _ => Err(crate::error::Error::new("usage: pacdeb add <name> [--preset <p> | --source <type>] [options]")),
         }),
-        "set" => registry_cmd(&args[1..], "usage: ferry set <name> [options], or ferry set --channel <name>", |pos, f| match pos {
+        "set" => registry_cmd(&args[1..], "usage: pacdeb set <name> [options], or pacdeb set --channel <name>", |pos, f| match pos {
             [] => crate::apps::set(None, f),
             [name] => crate::apps::set(Some(name), f),
-            _ => Err(crate::error::Error::new("usage: ferry set <name> [options], or ferry set --channel <name>")),
+            _ => Err(crate::error::Error::new("usage: pacdeb set <name> [options], or pacdeb set --channel <name>")),
         }),
         "list" => match &args[1..] {
             [] => finish(crate::apps::list()),
-            _ => usage_error("usage: ferry list"),
+            _ => usage_error("usage: pacdeb list"),
         },
         "remove" => match &args[1..] {
             [name] if !name.starts_with('-') => finish(crate::apps::remove(name)),
-            _ => usage_error("usage: ferry remove <name>"),
+            _ => usage_error("usage: pacdeb remove <name>"),
         },
         "check" => match &args[1..] {
             [] => finish(crate::apps::check(None)),
             [name] if !name.starts_with('-') => finish(crate::apps::check(Some(name))),
-            _ => usage_error("usage: ferry check [name]"),
+            _ => usage_error("usage: pacdeb check [name]"),
         },
         other => {
-            eprintln!("ferry: unknown command '{other}'. Run 'ferry --help' for the list.");
+            eprintln!("pacdeb: unknown command '{other}'. Run 'pacdeb --help' for the list.");
             ExitCode::from(2)
         }
     }
@@ -97,15 +97,15 @@ pub fn run(args: &[String]) -> ExitCode {
 
 fn inspect(args: &[String]) -> ExitCode {
     let [path] = args else {
-        return usage_error("usage: ferry inspect <file.deb>");
+        return usage_error("usage: pacdeb inspect <file.deb>");
     };
     if path.starts_with('-') {
-        return usage_error(&format!("unknown option '{path}'. Usage: ferry inspect <file.deb>"));
+        return usage_error(&format!("unknown option '{path}'. Usage: pacdeb inspect <file.deb>"));
     }
     finish(crate::inspect::run(Path::new(path)))
 }
 
-const CONVERT_USAGE: &str = "usage: ferry convert <file.deb> [--direct] [--out <dir>] [--dry-run]";
+const CONVERT_USAGE: &str = "usage: pacdeb convert <file.deb> [--direct] [--out <dir>] [--dry-run]";
 
 fn convert(args: &[String]) -> ExitCode {
     let mut deb = None;
@@ -131,7 +131,7 @@ fn convert(args: &[String]) -> ExitCode {
     finish(crate::convert::run(&crate::convert::Options { deb, dry_run, direct, out }))
 }
 
-const INSTALL_USAGE: &str = "usage: ferry install <file.deb|name> [--direct]";
+const INSTALL_USAGE: &str = "usage: pacdeb install <file.deb|name> [--direct]";
 
 fn install(args: &[String]) -> ExitCode {
     let mut target = None;
@@ -155,7 +155,7 @@ fn install(args: &[String]) -> ExitCode {
     }
 }
 
-const UPDATE_USAGE: &str = "usage: ferry update [name] [--file <file.deb>] [--direct] [--no-install]";
+const UPDATE_USAGE: &str = "usage: pacdeb update [name] [--file <file.deb>] [--direct] [--no-install]";
 
 fn update(args: &[String]) -> ExitCode {
     let mut opts = crate::update::Options { name: None, file: None, direct: false, no_install: false };
@@ -185,7 +185,7 @@ fn registry_cmd(args: &[String], usage: &str, run: impl FnOnce(&[String], &crate
 }
 
 fn usage_error(msg: &str) -> ExitCode {
-    eprintln!("ferry: {msg}");
+    eprintln!("pacdeb: {msg}");
     ExitCode::from(2)
 }
 
@@ -193,7 +193,7 @@ fn finish(result: Result<()>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{} {e}", crate::style::Style::for_stderr().bad("ferry:"));
+            eprintln!("{} {e}", crate::style::Style::for_stderr().bad("pacdeb:"));
             ExitCode::FAILURE
         }
     }

@@ -17,7 +17,7 @@ pub struct IndexFile {
 }
 
 /// Picks the Packages index for a component and architecture from Release, preferring
-/// the smallest compressed form Ferry can read.
+/// the smallest compressed form pacdeb can read.
 pub fn index_file(release: &str, component: &str, arch: &str) -> Result<IndexFile> {
     let control = Control::parse(release).context("the repository's Release file")?;
     let Some(list) = control.get("SHA256") else {

@@ -1,4 +1,4 @@
-//! The apps Ferry tracks (apps.toml in the config dir) and what it has built for them
+//! The apps pacdeb tracks (apps.toml in the config dir) and what it has built for them
 //! (state.toml in the state dir).
 
 use std::collections::BTreeMap;
@@ -115,7 +115,7 @@ pub enum SourceConfig {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         prerelease: bool,
     },
-    /// No remote: new versions come from `ferry update <app> --file <deb>`.
+    /// No remote: new versions come from `pacdeb update <app> --file <deb>`.
     Manual {},
 }
 
@@ -166,7 +166,7 @@ impl Config {
     pub fn save(&self, config_dir: &Path) -> Result<()> {
         let body = toml::to_string(self).context("writing apps.toml")?;
         let text = format!(
-            "# Apps Ferry tracks. Change it with 'ferry add', 'ferry set' and 'ferry remove';\n\
+            "# Apps pacdeb tracks. Change it with 'pacdeb add', 'pacdeb set' and 'pacdeb remove';\n\
              # hand edits work too, but comments are not kept.\n\n{body}"
         );
         write_atomic(&Config::path(config_dir), &text)
@@ -219,7 +219,7 @@ impl State {
 
     pub fn save(&self, state_dir: &Path) -> Result<()> {
         let body = toml::to_string(self).context("writing state.toml")?;
-        write_atomic(&state_dir.join("state.toml"), &format!("# Written by Ferry. Do not edit.\n\n{body}"))
+        write_atomic(&state_dir.join("state.toml"), &format!("# Written by pacdeb. Do not edit.\n\n{body}"))
     }
 }
 

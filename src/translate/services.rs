@@ -1,6 +1,6 @@
 //! Turns the services a deb's scripts enable or start into a note pacman shows after
 //! install. Arch packages never enable or start services on their own; the person
-//! decides, so Ferry tells them what Debian would have done.
+//! decides, so pacdeb tells them what Debian would have done.
 
 use super::scripts::{Command, Outcome, ServiceStep};
 use crate::model::Node;

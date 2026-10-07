@@ -1,5 +1,5 @@
 [package]
-name = "ferry"
+name = "pacdeb"
 version = "0.1.0"
 edition = "2024"
 description = "Repackage Debian .deb files as pacman packages and keep them updated"

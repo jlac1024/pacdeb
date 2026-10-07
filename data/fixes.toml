@@ -1,12 +1,12 @@
 # Known fixes for specific debs, compiled into the binary. Each one was found by
-# installing the converted package on Arch and is applied whenever Ferry converts a
+# installing the converted package on Arch and is applied whenever pacdeb converts a
 # deb with that Package name. Users can add or override entries in
-# ~/.config/ferry/fixes.toml.
+# ~/.config/pacdeb/fixes.toml.
 #
 # Per package:
 #   optdepends       extra "package: reason" entries
 #   install_note     lines pacman shows after a fresh install
-#   replace_note     true: install_note replaces the note Ferry derives from the
+#   replace_note     true: install_note replaces the note pacdeb derives from the
 #                    deb's service commands instead of adding to it
 #   [[<pkg>.files]]  files to add, or to replace when the deb ships them:
 #                    path, content, mode (octal string, default "644"), why
@@ -25,10 +25,10 @@ install_note = [
 ]
 
 [[chrome-remote-desktop.files]]
-path = "/usr/lib/systemd/system/chrome-remote-desktop@.service.d/10-ferry.conf"
+path = "/usr/lib/systemd/system/chrome-remote-desktop@.service.d/10-pacdeb.conf"
 why = "Arch's Xorg wrapper only lets console users start X, so the remote display runs on Xvfb"
 content = """
-# Added by Ferry: Arch's Xorg goes through Xorg.wrap, which refuses non-console users,
+# Added by pacdeb: Arch's Xorg goes through Xorg.wrap, which refuses non-console users,
 # so Chrome Remote Desktop's Xorg + dummy display cannot start. Xvfb works.
 [Service]
 Environment=CHROME_REMOTE_DESKTOP_USE_XVFB=1
@@ -40,7 +40,7 @@ mode = "755"
 why = "the original hands off to Debian's /etc/X11/Xsession, which Arch does not have"
 content = """
 #!/bin/bash
-# Replaced by Ferry. The Debian version runs /etc/X11/Xsession, which Arch does not
+# Replaced by pacdeb. The Debian version runs /etc/X11/Xsession, which Arch does not
 # have. This starts the session the chooser picked, or for "default" the user's
 # ~/.xsession or the first installed X11 desktop.
 if [ -n "$1" ] && [ "$1" != "default" ]; then

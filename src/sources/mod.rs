@@ -36,7 +36,7 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
         }
         match channel {
             Some(c) => Ok(s.replace("{channel}", c)),
-            None => bail!("{app} needs a channel; set one with 'ferry set {app} --channel <name>'"),
+            None => bail!("{app} needs a channel; set one with 'pacdeb set {app} --channel <name>'"),
         }
     };
     let fill_opt = |s: &Option<String>| -> Result<Option<String>> { s.as_deref().map(fill).transpose() };
@@ -69,7 +69,7 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
         }
         SourceConfig::Apt { repo, suite, component, package, arch, key } => {
             let Some(key) = key else {
-                bail!("{app}'s apt source has no signing key; add one with 'ferry set {app} --key <file>'");
+                bail!("{app}'s apt source has no signing key; add one with 'pacdeb set {app} --key <file>'");
             };
             let key = config_dir.join(key);
             let home = cache_dir.join("gnupg").join(app);
@@ -102,7 +102,7 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
             })
         }
         SourceConfig::Github { repo, asset, prerelease } => {
-            let token = std::env::var("FERRY_GITHUB_TOKEN").ok().filter(|t| !t.is_empty());
+            let token = std::env::var("PACDEB_GITHUB_TOKEN").ok().filter(|t| !t.is_empty());
             let auth = token.map(|t| format!("Bearer {t}"));
             let mut headers = vec![("Accept", "application/vnd.github+json")];
             if let Some(a) = &auth {
@@ -162,7 +162,7 @@ mod tests {
         };
         let tmp = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox");
         let err = latest("demo", &src, None, &tmp, &tmp).unwrap_err().to_string();
-        assert!(err.contains("ferry set demo --channel"), "{err}");
+        assert!(err.contains("pacdeb set demo --channel"), "{err}");
         assert_eq!(latest("demo", &SourceConfig::Manual {}, None, &tmp, &tmp).unwrap(), Latest::default());
         let apt = SourceConfig::Apt { repo: "r".into(), suite: "s".into(), component: "c".into(), package: None, arch: None, key: None };
         assert!(latest("demo", &apt, None, &tmp, &tmp).unwrap_err().to_string().contains("no signing key"));
