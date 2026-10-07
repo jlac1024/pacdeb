@@ -1,9 +1,14 @@
 mod cli;
 mod control;
+mod convert;
 mod deb;
 mod error;
+mod human;
 mod inspect;
+mod model;
+mod paths;
 mod relation;
+mod translate;
 mod version;
 
 use std::process::ExitCode;

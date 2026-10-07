@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::error::Result;
@@ -10,8 +10,9 @@ Usage: ferry <command> [options]
 
 Commands:
   inspect <file.deb>                 Show control fields, files, scripts and dep mapping
-  convert <file.deb> [--direct] [--out <dir>]
-                                     Build a pacman package without installing it
+  convert <file.deb> [--direct] [--out <dir>] [--dry-run]
+                                     Build a pacman package without installing it;
+                                     --dry-run prints what would be built
   install <file.deb|name> [--direct] Convert and install with sudo pacman -U
   add <name> --source <direct|apt|github|manual> ...
                                      Register an app for updates
@@ -31,7 +32,7 @@ Environment:
   FERRY_GITHUB_TOKEN  Token for GitHub API requests
 ";
 
-const UNFINISHED: &[&str] = &["convert", "install", "add", "list", "check", "update", "remove"];
+const UNFINISHED: &[&str] = &["install", "add", "list", "check", "update", "remove"];
 
 pub fn run(args: &[String]) -> ExitCode {
     let Some(first) = args.first() else {
@@ -49,6 +50,7 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         "inspect" => inspect(&args[1..]),
+        "convert" => convert(&args[1..]),
         cmd if UNFINISHED.contains(&cmd) => {
             eprintln!("ferry: '{cmd}' is not implemented yet");
             ExitCode::FAILURE
@@ -68,6 +70,32 @@ fn inspect(args: &[String]) -> ExitCode {
         return usage_error(&format!("unknown option '{path}'. Usage: ferry inspect <file.deb>"));
     }
     finish(crate::inspect::run(Path::new(path)))
+}
+
+const CONVERT_USAGE: &str = "usage: ferry convert <file.deb> [--direct] [--out <dir>] [--dry-run]";
+
+fn convert(args: &[String]) -> ExitCode {
+    let mut deb = None;
+    let mut opts = (false, false, None);
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--dry-run" => opts.0 = true,
+            "--direct" => opts.1 = true,
+            "--out" => match iter.next() {
+                Some(dir) => opts.2 = Some(PathBuf::from(dir)),
+                None => return usage_error(&format!("--out needs a directory. {CONVERT_USAGE}")),
+            },
+            s if s.starts_with('-') => return usage_error(&format!("unknown option '{s}'. {CONVERT_USAGE}")),
+            s if deb.is_none() => deb = Some(PathBuf::from(s)),
+            s => return usage_error(&format!("unexpected argument '{s}'. {CONVERT_USAGE}")),
+        }
+    }
+    let Some(deb) = deb else {
+        return usage_error(CONVERT_USAGE);
+    };
+    let (dry_run, direct, out) = opts;
+    finish(crate::convert::run(&crate::convert::Options { deb, dry_run, direct, out }))
 }
 
 fn usage_error(msg: &str) -> ExitCode {
