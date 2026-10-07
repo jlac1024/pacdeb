@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::error::{Result, bail};
+use crate::error::{Context, Result, bail};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -13,8 +13,21 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// Paths are made absolute, since makepkg runs in another directory.
     pub fn from_env() -> Result<Paths> {
-        Paths::from_vars(|k| std::env::var_os(k))
+        let p = Paths::from_vars(|k| std::env::var_os(k))?;
+        let abs = |p: PathBuf| std::path::absolute(&p).context(p.display());
+        Ok(Paths { config: abs(p.config)?, state: abs(p.state)?, cache: abs(p.cache)? })
+    }
+
+    /// Where makepkg work directories live.
+    pub fn work_dir(&self) -> PathBuf {
+        self.cache.join("build")
+    }
+
+    /// Where finished packages go unless --out says otherwise.
+    pub fn packages_dir(&self) -> PathBuf {
+        self.cache.join("packages")
     }
 
     fn from_vars(get: impl Fn(&str) -> Option<OsString>) -> Result<Paths> {
