@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::error::{Context, Result, bail};
+use crate::error::{Context, Error, Result, bail};
 
 /// Feeds and indexes are small; anything past this is not what we asked for.
 const TEXT_LIMIT: u64 = 64 << 20;
@@ -58,7 +58,32 @@ fn get(url: &str, headers: &[(&str, &str)]) -> Result<ureq::http::Response<ureq:
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    req.call().context(format!("cannot fetch {url}"))
+    req.call().map_err(|e| Error::new(format!("cannot fetch {url}: {}", describe(&e))))
+}
+
+/// ureq's messages name its internals; these say what went wrong and what to try.
+fn describe(e: &ureq::Error) -> String {
+    use ureq::Error as E;
+    match e {
+        E::StatusCode(404 | 410) => "the server has no such file (404); check the URL".into(),
+        E::StatusCode(c @ (401 | 403)) => format!("the server refused access ({c})"),
+        E::StatusCode(429) => "the server is rate limiting requests (429); try again later".into(),
+        E::StatusCode(c) if *c >= 500 => format!("the server had an error ({c}); try again later"),
+        E::StatusCode(c) => format!("the server answered with status {c}"),
+        E::HostNotFound => "host not found; check the URL and your internet connection".into(),
+        E::Io(io) if io.to_string().contains("lookup address") => {
+            "host not found; check the URL and your internet connection".into()
+        }
+        E::ConnectionFailed => "could not connect; check your internet connection".into(),
+        E::Timeout(_) => "the server took too long to answer; try again later".into(),
+        E::BadUri(_) => "this is not a valid URL".into(),
+        other => crate::error::plain(other),
+    }
+}
+
+/// Whether a fetch failed because the server has no such file.
+pub fn not_found(e: &Error) -> bool {
+    e.to_string().contains("no such file (404)")
 }
 
 pub fn get_bytes(url: &str, headers: &[(&str, &str)]) -> Result<Vec<u8>> {
@@ -78,7 +103,7 @@ pub struct Head {
 }
 
 pub fn head(url: &str) -> Result<Head> {
-    let resp = agent().head(url).call().context(format!("cannot reach {url}"))?;
+    let resp = agent().head(url).call().map_err(|e| Error::new(format!("cannot reach {url}: {}", describe(&e))))?;
     let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(String::from);
     Ok(Head { etag: header("etag"), last_modified: header("last-modified") })
 }
