@@ -72,12 +72,40 @@ pub struct Translation {
     /// Things worth knowing that need no action.
     pub notes: Vec<String>,
     /// Things a person should look at.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
     pub scripts: Vec<ScriptCommand>,
     pub desktop: Vec<DesktopCheck>,
     pub sonames: SonameReport,
     /// Unmapped dependency groups, also listed in warnings.
     pub unmapped: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    /// A dependency group with no Arch name: ("Depends", "libfoo1 | libfoo2").
+    Unmapped { field: String, deps: String },
+    /// A script line Ferry has no translation for.
+    Untranslated { script: String, line: usize, text: String, why: String },
+    /// A script line left out because whether it runs depends on the system.
+    SystemDependent { script: String, line: usize, text: String, condition: String },
+    Other(String),
+}
+
+impl std::fmt::Display for Warning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Warning::Unmapped { field, deps } => {
+                write!(f, "no Arch name for {field}: {deps}; left out (add it to depmap.toml if it is needed)")
+            }
+            Warning::Untranslated { script, line, text, why } => {
+                write!(f, "{script} line {line}: not translated ({why}): {text}")
+            }
+            Warning::SystemDependent { script, line, text, condition } => {
+                write!(f, "{script} line {line}: left out, runs only if {condition}: {text}")
+            }
+            Warning::Other(s) => f.write_str(s),
+        }
+    }
 }
 
 pub fn translate<R: Read + Seek>(
@@ -136,11 +164,6 @@ pub fn translate<R: Read + Seek>(
         }
     }
     apply_actions(&mut nodes, &map, &script_cmds, &mut changes, &mut warnings);
-    for c in &script_cmds {
-        if let Outcome::Unknown(why) = &c.outcome {
-            warnings.push(format!("{} line {}: not translated ({why}): {}", c.script, c.line, c.text));
-        }
-    }
 
     changes.extend(fs::fix_modes(&mut nodes));
     ensure_parents(&mut nodes);
@@ -178,9 +201,23 @@ pub fn translate<R: Read + Seek>(
         warnings.push(format!("{lib} is needed by a binary but no Arch package provides it in /usr/lib"));
     }
 
-    for u in &deps.unmapped {
-        warnings.push(format!("no Arch name for {u}; left out (add it to depmap.toml if it is needed)"));
+    let mut all = Vec::new();
+    for c in &script_cmds {
+        let (script, line, text) = (c.script.clone(), c.line, c.text.clone());
+        match &c.outcome {
+            Outcome::Unknown(why) => all.push(Warning::Untranslated { script, line, text, why: why.clone() }),
+            Outcome::Conditional { condition, .. } => {
+                all.push(Warning::SystemDependent { script, line, text, condition: condition.clone() })
+            }
+            _ => {}
+        }
     }
+    for u in &deps.unmapped {
+        let (field, deps) = u.split_once(": ").unwrap_or(("", u));
+        all.push(Warning::Unmapped { field: field.to_string(), deps: deps.to_string() });
+    }
+    all.extend(warnings.into_iter().map(Warning::Other));
+    let warnings = all;
 
     Ok(Translation {
         package: Package {
@@ -489,6 +526,7 @@ weird-tool --setup
         );
 
         let has = |list: &[String], want: &str| list.iter().any(|s| s.contains(want));
+        let warnings: Vec<String> = t.warnings.iter().map(ToString::to_string).collect();
         for want in [
             "removed apt file /etc/apt/sources.list.d/demo.list",
             "moved 1 entry from /bin into /usr/bin",
@@ -506,7 +544,7 @@ weird-tool --setup
             "no Arch name for Depends: libfoo-unmapped",
             "libmystery.so.1 is needed by a binary but no Arch package provides it",
         ] {
-            assert!(has(&t.warnings, want), "missing warning {want:?} in {:#?}", t.warnings);
+            assert!(has(&warnings, want), "missing warning {want:?} in {:#?}", t.warnings);
         }
         assert_eq!(t.warnings.len(), 5, "{:#?}", t.warnings);
         assert!(has(&t.notes, "version constraints dropped"), "{:?}", t.notes);

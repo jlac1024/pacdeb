@@ -11,7 +11,8 @@ use crate::error::{Context, Result};
 use crate::human;
 use crate::model::NodeKind;
 use crate::paths::Paths;
-use crate::translate::{self, Action, DepMap, Outcome, Translation};
+use crate::style::Style;
+use crate::translate::{self, Action, DepMap, Outcome, Translation, Warning};
 
 pub struct Options {
     pub deb: PathBuf,
@@ -31,12 +32,12 @@ pub fn run(opts: &Options) -> Result<()> {
         if let Some(out) = &opts.out {
             writeln!(text, "Output:  {}", out.display()).unwrap();
         }
-        text.push_str(&report(&t));
+        text.push_str(&report(&t, Style::for_stdout()));
         let _ = std::io::stdout().write_all(text.as_bytes());
         return Ok(());
     }
     let built = build_package(&opts.deb, opts.direct, opts.out.as_deref())?;
-    println!("Built {}", built.display());
+    println!("{} {}", Style::for_stdout().good("Built"), built.display());
     Ok(())
 }
 
@@ -55,12 +56,11 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Resul
     let t = translate::translate(&mut deb, &depmap, 1, &translate::LiveSystem).context(deb_path.display())?;
 
     let p = &t.package;
-    println!("Building {} {} from {}", p.name, p.version, deb_path.display());
+    let style = Style::for_stdout();
+    println!("Building {} {} from {}", style.bold(&p.name), p.version, deb_path.display());
     if !t.warnings.is_empty() {
-        println!("{} (run convert --dry-run for the full report):", human::plural(t.warnings.len(), "warning", "warnings"));
-        for w in &t.warnings {
-            println!("  - {w}");
-        }
+        print!("\n{}", render_warnings(&t.warnings, style));
+        println!("\n{}\n", style.dim(&format!("Full report: ferry convert --dry-run {}", deb_path.display())));
     }
 
     let out_dir = match out {
@@ -74,7 +74,94 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Resul
     build::with_makepkg(&mut deb, p, &origin, &paths.work_dir(), &out_dir)
 }
 
-pub fn report(t: &Translation) -> String {
+/// Warnings grouped by kind, with script lines left out for system reasons grouped
+/// under the condition they wait on.
+pub fn render_warnings(ws: &[Warning], st: Style) -> String {
+    let mut out = String::new();
+    if ws.is_empty() {
+        return out;
+    }
+    writeln!(out, "{}", st.warn(&human::plural(ws.len(), "warning", "warnings"))).unwrap();
+
+    let at = |script: &str, line: usize| format!("{script}:{line}");
+    let width = ws
+        .iter()
+        .filter_map(|w| match w {
+            Warning::SystemDependent { script, line, .. } | Warning::Untranslated { script, line, .. } => {
+                Some(at(script, *line).len())
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let pad = |s: String| format!("{s:<width$}");
+
+    let mut groups: Vec<(&str, Vec<(String, &str)>)> = Vec::new();
+    for w in ws {
+        if let Warning::SystemDependent { script, line, text, condition } = w {
+            let entry = (at(script, *line), text.as_str());
+            match groups.iter_mut().find(|(c, _)| *c == condition.as_str()) {
+                Some((_, items)) => items.push(entry),
+                None => groups.push((condition, vec![entry])),
+            }
+        }
+    }
+    if !groups.is_empty() {
+        writeln!(out, "\n  {}", st.bold("Left out because they depend on your system, not on the package:")).unwrap();
+        for (condition, items) in groups {
+            writeln!(out, "    if {condition}").unwrap();
+            for (a, text) in items {
+                writeln!(out, "      {}  {text}", st.dim(&pad(a))).unwrap();
+            }
+        }
+    }
+
+    let untranslated: Vec<_> = ws
+        .iter()
+        .filter_map(|w| match w {
+            Warning::Untranslated { script, line, text, why } => Some((at(script, *line), text, why)),
+            _ => None,
+        })
+        .collect();
+    if !untranslated.is_empty() {
+        writeln!(out, "\n  {}", st.bold("Script lines Ferry could not translate (check them by hand):")).unwrap();
+        for (a, text, why) in untranslated {
+            writeln!(out, "    {}  {text}", st.dim(&pad(a))).unwrap();
+            writeln!(out, "    {:width$}  {}", "", st.dim(why)).unwrap();
+        }
+    }
+
+    let unmapped: Vec<_> = ws
+        .iter()
+        .filter_map(|w| match w {
+            Warning::Unmapped { field, deps } => Some((deps, field)),
+            _ => None,
+        })
+        .collect();
+    if !unmapped.is_empty() {
+        writeln!(out, "\n  {}", st.bold("Dependencies with no Arch name, left out (map them in depmap.toml if needed):")).unwrap();
+        for (deps, field) in unmapped {
+            writeln!(out, "    {deps}  {}", st.dim(&format!("({field})"))).unwrap();
+        }
+    }
+
+    let other: Vec<&String> = ws
+        .iter()
+        .filter_map(|w| match w {
+            Warning::Other(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    if !other.is_empty() {
+        writeln!(out, "\n  {}", st.bold("Other:")).unwrap();
+        for s in other {
+            writeln!(out, "    {s}").unwrap();
+        }
+    }
+    out
+}
+
+pub fn report(t: &Translation, st: Style) -> String {
     let mut out = String::new();
     let p = &t.package;
     writeln!(out, "Would build {} {} for {} (from deb version {})", p.name, p.version, p.arch, p.deb_version).unwrap();
@@ -146,9 +233,9 @@ pub fn report(t: &Translation) -> String {
     libraries(&mut out, t);
 
     if t.warnings.is_empty() {
-        writeln!(out, "\nNo warnings.").unwrap();
+        writeln!(out, "\n{}", st.good("No warnings.")).unwrap();
     } else {
-        section(&mut out, &format!("Warnings ({})", t.warnings.len()), &t.warnings);
+        write!(out, "\n{}", render_warnings(&t.warnings, st)).unwrap();
     }
     out
 }
@@ -194,6 +281,7 @@ fn describe(o: &Outcome) -> String {
         Outcome::Handled(why) => format!("nothing, {why}"),
         Outcome::AptRepo => "dropped, apt repository setup".to_string(),
         Outcome::Skipped(why) => format!("nothing, it {why}"),
+        Outcome::Conditional { condition, would } => format!("left out, runs only if {condition}; it would {would}"),
         Outcome::Unknown(why) => format!("NOT TRANSLATED: {why}"),
     }
 }
@@ -229,7 +317,7 @@ mod tests {
         .build();
         let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
         let t = translate::translate(&mut deb, &DepMap::builtin(), 1, &BareSystem).unwrap();
-        let text = report(&t);
+        let text = report(&t, Style::plain());
         for want in [
             "Would build demo 1.0-1 for x86_64 (from deb version 1.0-1)",
             "  Depends      nss\n",
@@ -239,11 +327,41 @@ mod tests {
             "    -> nothing, a pacman hook updates the MIME database\n",
             "  postinst line 4: frobnicate\n    -> NOT TRANSLATED: no translation for this command\n",
             "Libraries the binaries load:\n  no dynamically linked binaries found\n",
-            "Warnings (3):",
-            "no Arch name for Depends: libodd1",
-            "no .desktop file in /usr/share/applications",
+            "\n3 warnings\n",
+            "  Script lines Ferry could not translate (check them by hand):\n    postinst:4  frobnicate\n                no translation for this command\n",
+            "  Dependencies with no Arch name, left out (map them in depmap.toml if needed):\n    libodd1  (Depends)\n",
+            "  Other:\n    no .desktop file in /usr/share/applications",
         ] {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
+    }
+
+    #[test]
+    fn groups_system_dependent_lines_by_condition() {
+        let sd = |script: &str, line, text: &str, condition: &str| Warning::SystemDependent {
+            script: script.into(),
+            line,
+            text: text.into(),
+            condition: condition.into(),
+        };
+        let ws = [
+            sd("postinst", 255, "rm -f /etc/apparmor.d/app", "/etc/apparmor.d/abi/4.0 exists"),
+            sd("postinst", 64, "rm -f /usr/bin/ccd", "/usr/bin/ccd is a symlink"),
+            sd("postinst", 256, "cat > /etc/apparmor.d/app", "/etc/apparmor.d/abi/4.0 exists"),
+            sd("postrm", 28, "rm -f /usr/bin/ccd", "/usr/bin/ccd is a symlink"),
+        ];
+        let text = render_warnings(&ws, Style::plain());
+        let want = "\
+4 warnings
+
+  Left out because they depend on your system, not on the package:
+    if /etc/apparmor.d/abi/4.0 exists
+      postinst:255  rm -f /etc/apparmor.d/app
+      postinst:256  cat > /etc/apparmor.d/app
+    if /usr/bin/ccd is a symlink
+      postinst:64   rm -f /usr/bin/ccd
+      postrm:28     rm -f /usr/bin/ccd
+";
+        assert_eq!(text, want);
     }
 }
