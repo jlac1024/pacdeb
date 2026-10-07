@@ -12,7 +12,7 @@ use crate::relation::{Atom, format_group, parse_relations};
 
 const BUILTIN: &str = include_str!("../../data/depmap.toml");
 
-/// Fields that name Debian packages pacman knows nothing about. Ferry lists them
+/// Fields that name Debian packages pacman knows nothing about. pacdeb lists them
 /// instead of carrying them over; per app overrides cover real conflicts.
 const NOT_CARRIED: [&str; 5] = ["Conflicts", "Breaks", "Provides", "Replaces", "Enhances"];
 

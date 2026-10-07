@@ -1,5 +1,5 @@
 # Built in Debian to Arch dependency names, compiled into the binary.
-# Users can override entries in ~/.config/ferry/depmap.toml.
+# Users can override entries in ~/.config/pacdeb/depmap.toml.
 #
 # Format: "debian-name" = "arch-name"
 # Several Arch packages are separated by spaces, for Debian packages whose own

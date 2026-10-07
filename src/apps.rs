@@ -275,7 +275,7 @@ pub fn add(name: &str, f: &Flags) -> Result<()> {
     let paths = Paths::from_env()?;
     let mut config = Config::load(&paths.config)?;
     if config.apps.contains_key(name) {
-        bail!("{name} is already tracked; change it with 'ferry set {name} ...'");
+        bail!("{name} is already tracked; change it with 'pacdeb set {name} ...'");
     }
     let all = presets();
     let preset_name = f.preset.clone().or_else(|| (f.source.is_none() && all.contains_key(name)).then(|| name.to_string()));
@@ -320,7 +320,7 @@ pub fn add(name: &str, f: &Flags) -> Result<()> {
     if let Some(note) = preset.and_then(|p| p.note.as_deref()) {
         println!("{note}");
     }
-    println!("Run 'ferry check {name}' to see the newest version.");
+    println!("Run 'pacdeb check {name}' to see the newest version.");
     Ok(())
 }
 
@@ -330,7 +330,7 @@ pub fn set(name: Option<&str>, f: &Flags) -> Result<()> {
     let Some(name) = name else {
         // Without an app, only the global channel can be set.
         let Some(c) = &f.channel else {
-            bail!("usage: ferry set --channel <name> (global), or ferry set <app> <options>");
+            bail!("usage: pacdeb set --channel <name> (global), or pacdeb set <app> <options>");
         };
         config.settings.channel = if c.is_empty() { None } else { Some(c.clone()) };
         config.save(&paths.config)?;
@@ -341,7 +341,7 @@ pub fn set(name: Option<&str>, f: &Flags) -> Result<()> {
         return Ok(());
     };
     let Some(app) = config.apps.get_mut(name) else {
-        bail!("{name} is not tracked; add it with 'ferry add {name}'");
+        bail!("{name} is not tracked; add it with 'pacdeb add {name}'");
     };
     if let Some(kind) = &f.source {
         app.source = source_from_flags(kind, f)?;
@@ -401,7 +401,7 @@ pub fn list() -> Result<()> {
     let config = Config::load(&paths.config)?;
     let state = State::load(&paths.state)?;
     if config.apps.is_empty() {
-        println!("No apps tracked. Add one with 'ferry add <name>'.");
+        println!("No apps tracked. Add one with 'pacdeb add <name>'.");
         return Ok(());
     }
     let st = Style::for_stdout();
@@ -477,7 +477,7 @@ pub fn check(name: Option<&str>) -> Result<()> {
         None => config.apps.keys().collect(),
     };
     if names.is_empty() {
-        println!("No apps tracked. Add one with 'ferry add <name>'.");
+        println!("No apps tracked. Add one with 'pacdeb add <name>'.");
         return Ok(());
     }
     let st = Style::for_stdout();
@@ -499,11 +499,11 @@ pub fn check(name: Option<&str>) -> Result<()> {
                     println!("{label}  {} {c} -> {latest}{shown_channel}", st.warn("update:"))
                 }
                 Status::Newer { current: None, latest } => {
-                    println!("{label}  {} {latest}{shown_channel} (not built by Ferry yet)", st.warn("available:"))
+                    println!("{label}  {} {latest}{shown_channel} (not built by pacdeb yet)", st.warn("available:"))
                 }
                 Status::Changed(true) => println!("{label}  {} the download changed since the last build", st.warn("maybe:")),
                 Status::Changed(false) => println!("{label}  unchanged since the last build"),
-                Status::Manual => println!("{label}  manual source: update with 'ferry update {n} --file <deb>'"),
+                Status::Manual => println!("{label}  manual source: update with 'pacdeb update {n} --file <deb>'"),
             },
         }
     }

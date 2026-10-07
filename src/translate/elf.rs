@@ -9,7 +9,7 @@ const DT_STRTAB: u64 = 5;
 pub const MAGIC: &[u8; 4] = b"\x7fELF";
 
 /// The libraries a 64 bit little endian ELF file asks for. None when the file is not
-/// one Ferry can read (32 bit, big endian, truncated), or is statically linked.
+/// one pacdeb can read (32 bit, big endian, truncated), or is statically linked.
 pub fn needed(data: &[u8]) -> Option<Vec<String>> {
     if data.get(..4)? != MAGIC || *data.get(4)? != 2 || *data.get(5)? != 1 {
         return None;

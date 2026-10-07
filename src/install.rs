@@ -1,4 +1,4 @@
-//! Hands built packages to pacman. Ferry never asks for or stores the sudo password:
+//! Hands built packages to pacman. pacdeb never asks for or stores the sudo password:
 //! sudo and pacman talk to the terminal directly.
 
 use std::path::PathBuf;
@@ -6,10 +6,10 @@ use std::process::Command;
 
 use crate::error::{Result, bail};
 
-/// Runs `sudo pacman -U <pkgs>`, or `FERRY_INSTALL_CMD <pkgs>` when that is set. Several
+/// Runs `sudo pacman -U <pkgs>`, or `PACDEB_INSTALL_CMD <pkgs>` when that is set. Several
 /// packages go in one call, so there is one password prompt and one confirmation.
 pub fn install(pkgs: &[PathBuf]) -> Result<()> {
-    let custom = std::env::var("FERRY_INSTALL_CMD").ok().filter(|c| !c.trim().is_empty());
+    let custom = std::env::var("PACDEB_INSTALL_CMD").ok().filter(|c| !c.trim().is_empty());
     run(custom.as_deref(), pkgs)
 }
 

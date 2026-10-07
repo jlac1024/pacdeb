@@ -18,7 +18,7 @@ pub enum Source {
     Deb(String),
     /// Bytes a maintainer script would have written, such as a heredoc.
     Inline(Vec<u8>),
-    /// Nothing to copy: directories and symlinks Ferry adds itself.
+    /// Nothing to copy: directories and symlinks pacdeb adds itself.
     None,
 }
 

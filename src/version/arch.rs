@@ -13,7 +13,7 @@ pub struct ArchVersion {
 }
 
 impl ArchVersion {
-    /// Maps a Debian version. The Debian revision is dropped because pkgrel is Ferry's own
+    /// Maps a Debian version. The Debian revision is dropped because pkgrel is pacdeb's own
     /// rebuild counter, and ":" and "-" become "_" because pkgver may not contain them.
     pub fn from_debian(v: &DebVersion, pkgrel: u32) -> ArchVersion {
         debug_assert!(pkgrel >= 1, "pkgrel starts at 1");

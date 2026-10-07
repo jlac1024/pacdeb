@@ -11,5 +11,5 @@ export CARGO_TARGET_DIR="$root/build/target"
 cargo build --release "$@"
 
 mkdir -p "$root/deploy"
-install -m 755 "$CARGO_TARGET_DIR/release/ferry" "$root/deploy/ferry"
-echo "built deploy/ferry"
+install -m 755 "$CARGO_TARGET_DIR/release/pacdeb" "$root/deploy/pacdeb"
+echo "built deploy/pacdeb"

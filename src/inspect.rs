@@ -1,4 +1,4 @@
-//! `ferry inspect`: a readable report on what is inside a .deb.
+//! `pacdeb inspect`: a readable report on what is inside a .deb.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -19,7 +19,7 @@ const PACMAN_VERSION: &str = "Pacman version";
 pub fn run(path: &Path) -> Result<()> {
     let mut deb = Deb::open(path)?;
     let entries = deb.data_entries().context(path.display())?;
-    // A closed pipe (ferry inspect x.deb | head) is not worth an error message.
+    // A closed pipe (pacdeb inspect x.deb | head) is not worth an error message.
     let _ = std::io::stdout().write_all(report(&deb, &entries).as_bytes());
     Ok(())
 }

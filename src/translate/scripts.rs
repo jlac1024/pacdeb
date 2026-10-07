@@ -1,5 +1,5 @@
 //! Reads Debian maintainer scripts without running them. Each command is sorted into
-//! something Ferry turns into package contents, something a pacman hook already does,
+//! something pacdeb turns into package contents, something a pacman hook already does,
 //! something that needs nothing on Arch, or something a person has to look at.
 //!
 //! This is not a shell. It follows plain command lines, literal variables, `if`/`case`
@@ -388,7 +388,7 @@ impl Analyzer<'_> {
     }
 
     fn eval_test(&self, words: &[String]) -> Tri {
-        // debhelper asks dpkg's own service state. A Ferry package is always a first
+        // debhelper asks dpkg's own service state. A pacdeb package is always a first
         // install as far as that state goes: nothing was installed before, and
         // was-enabled defaults to true for new installs (debhelper's own comment says so).
         if words.first().is_some_and(|w| w == "deb-systemd-helper") {
@@ -709,7 +709,7 @@ fn chmod(args: &[String]) -> Outcome {
     };
     match literal_paths(paths) {
         Some(paths) => Outcome::Actions(paths.into_iter().map(|path| Action::Chmod { path, mode }).collect()),
-        None => Outcome::Unknown("chmod on a path Ferry cannot resolve".into()),
+        None => Outcome::Unknown("chmod on a path pacdeb cannot resolve".into()),
     }
 }
 
@@ -743,7 +743,7 @@ fn ln(args: &[String]) -> Outcome {
     match rest.as_slice() {
         [target, link] if symbolic && !link.ends_with('/') && !unresolved(target) => match literal_path(link) {
             Some(link) => Outcome::Actions(vec![Action::Symlink { link, target: target.to_string() }]),
-            None => Outcome::Unknown("ln -s to a path Ferry cannot resolve".into()),
+            None => Outcome::Unknown("ln -s to a path pacdeb cannot resolve".into()),
         },
         _ => Outcome::Unknown("only 'ln -s <target> <absolute link>' is translated".into()),
     }
@@ -753,7 +753,7 @@ fn rm(args: &[String]) -> Outcome {
     let paths: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     match literal_paths(&paths) {
         Some(paths) => Outcome::Actions(paths.into_iter().map(|path| Action::Remove { path }).collect()),
-        None => Outcome::Unknown("rm on a path Ferry cannot resolve".into()),
+        None => Outcome::Unknown("rm on a path pacdeb cannot resolve".into()),
     }
 }
 
@@ -786,7 +786,7 @@ fn mkdir(args: &[String]) -> Outcome {
     }
     match literal_paths(&paths) {
         Some(paths) => Outcome::Actions(paths.into_iter().map(|path| Action::Mkdir { path }).collect()),
-        None => Outcome::Unknown("mkdir on a path Ferry cannot resolve".into()),
+        None => Outcome::Unknown("mkdir on a path pacdeb cannot resolve".into()),
     }
 }
 
@@ -813,7 +813,7 @@ fn install(args: &[String]) -> Outcome {
         i += 1;
     }
     let Some(p) = literal_paths(&paths) else {
-        return Outcome::Unknown("install with paths Ferry cannot resolve".into());
+        return Outcome::Unknown("install with paths pacdeb cannot resolve".into());
     };
     if dirs {
         return Outcome::Actions(p.into_iter().map(|path| Action::Mkdir { path }).collect());
@@ -1038,14 +1038,14 @@ fn sysv_service(cmd: &str, args: &[String]) -> Outcome {
 
 fn write_heredoc(target: &str, h: &Heredoc, vars: &HashMap<String, String>) -> Outcome {
     let Some(path) = literal_path(target) else {
-        return Outcome::Unknown(format!("writes to {target}, a path Ferry cannot resolve"));
+        return Outcome::Unknown(format!("writes to {target}, a path pacdeb cannot resolve"));
     };
     let mut content = String::new();
     for l in &h.body {
         if h.expand {
             match expand_text(l, vars) {
                 Some(t) => content.push_str(&t),
-                None => return Outcome::Unknown(format!("the text written to {path} uses values Ferry cannot resolve")),
+                None => return Outcome::Unknown(format!("the text written to {path} uses values pacdeb cannot resolve")),
             }
         } else {
             content.push_str(l);

@@ -1,4 +1,4 @@
-//! `ferry update` and `ferry install`: fetch new debs, build them and install the
+//! `pacdeb update` and `pacdeb install`: fetch new debs, build them and install the
 //! results with one pacman call.
 
 use std::fs;
@@ -32,15 +32,15 @@ pub fn update(opts: &Options) -> Result<()> {
     let st = Style::for_stdout();
 
     if opts.file.is_some() && opts.name.is_none() {
-        bail!("--file needs an app name: ferry update <app> --file <deb>");
+        bail!("--file needs an app name: pacdeb update <app> --file <deb>");
     }
     let names: Vec<String> = match &opts.name {
         Some(n) if config.apps.contains_key(n) => vec![n.clone()],
-        Some(n) => bail!("{n} is not tracked; add it with 'ferry add {n}'"),
+        Some(n) => bail!("{n} is not tracked; add it with 'pacdeb add {n}'"),
         None => config.apps.keys().cloned().collect(),
     };
     if names.is_empty() {
-        println!("No apps tracked. Add one with 'ferry add <name>'.");
+        println!("No apps tracked. Add one with 'pacdeb add <name>'.");
         return Ok(());
     }
 
@@ -96,7 +96,7 @@ fn update_one(name: &str, app: &App, config: &Config, direct: bool, paths: &Path
             Ok(None)
         }
         Status::Manual => {
-            println!("{name}: manual source, nothing to fetch; use 'ferry update {name} --file <deb>'");
+            println!("{name}: manual source, nothing to fetch; use 'pacdeb update {name} --file <deb>'");
             Ok(None)
         }
         Status::Newer { .. } | Status::Changed(true) => {
@@ -171,17 +171,17 @@ fn record(state: &mut State, name: &str, built: &Built, latest: Option<&Latest>)
     }
 }
 
-/// `ferry install <app>`: the newest version from the app's source, built and installed
-/// even when it is already the version Ferry built last.
+/// `pacdeb install <app>`: the newest version from the app's source, built and installed
+/// even when it is already the version pacdeb built last.
 pub fn install_app(name: &str, direct: bool) -> Result<()> {
     let paths = Paths::from_env()?;
     let config = Config::load(&paths.config)?;
     let mut state = State::load(&paths.state)?;
     let Some(app) = config.apps.get(name) else {
-        bail!("{name} is not tracked; add it with 'ferry add {name}', or pass a .deb file");
+        bail!("{name} is not tracked; add it with 'pacdeb add {name}', or pass a .deb file");
     };
     if let SourceConfig::Manual {} = app.source {
-        bail!("{name} has a manual source; install a deb file with 'ferry install <file.deb>'");
+        bail!("{name} has a manual source; install a deb file with 'pacdeb install <file.deb>'");
     }
     let channel = config.channel(app);
     let latest = sources::latest(name, &app.source, channel.as_deref(), &paths.config, &paths.cache)?;
@@ -203,7 +203,7 @@ pub fn install_app(name: &str, direct: bool) -> Result<()> {
     install::install(&[pkg])
 }
 
-/// `ferry install <file.deb>`: builds and installs a local deb. A deb whose package is
+/// `pacdeb install <file.deb>`: builds and installs a local deb. A deb whose package is
 /// not tracked yet is registered as a manual app so list and update know it.
 pub fn install_file(deb: &Path, direct: bool) -> Result<()> {
     let paths = Paths::from_env()?;
@@ -224,7 +224,7 @@ pub fn install_file(deb: &Path, direct: bool) -> Result<()> {
     if registered {
         config.apps.insert(name.clone(), app);
         config.save(&paths.config)?;
-        println!("Now tracking {name} as a manual app; give it a source with 'ferry set {name} --source ...' to get updates");
+        println!("Now tracking {name} as a manual app; give it a source with 'pacdeb set {name} --source ...' to get updates");
     }
     install::install(&[built.path])
 }

@@ -18,7 +18,7 @@ const INCLUDES: [(&str, &str); 5] = [
 pub struct Rewrite {
     pub text: String,
     pub changes: Vec<String>,
-    /// Includes Ferry has no Arch line for.
+    /// Includes pacdeb has no Arch line for.
     pub unknown: Vec<String>,
 }
 
