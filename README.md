@@ -101,6 +101,10 @@ version, install the older one with `sudo pacman -U <package>`.
 - Reads the maintainer scripts instead of running them. Known steps (symlinks,
   permissions, system users, update-alternatives) become part of the package, steps
   pacman hooks already handle are skipped, and anything else is shown to you.
+- Names the package `<name>-deb` when a repo or the AUR has a package with the same
+  name, since a system update would otherwise replace your build with that package.
+  It provides and conflicts with the original name, so anything that needs the app
+  still finds it. `--pkgname` picks a name yourself.
 - Keeps Electron apps working: `chrome-sandbox` gets its setuid bit, and binaries are
   not stripped.
 
