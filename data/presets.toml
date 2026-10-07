@@ -15,7 +15,7 @@ default_channel = "Stable"
 [example-app]
 key_url = "https://apt.example.com/app/key.asc"
 key_fingerprint = "A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"
-note = "The apt repository is signed. Download the key from key_url and pass it with --key; Ferry checks it against the published fingerprint."
+note = "The apt repository is signed; Ferry fetched its key and checked it against the vendor's published fingerprint."
 
 [example-app.source]
 type = "apt"

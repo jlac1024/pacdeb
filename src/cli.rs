@@ -28,8 +28,10 @@ Options for add and set:
   --channel <c>  --pkgname <n>  --provides a,b  --conflicts a,b
   --depends a,b (extra)  --no-depends a,b (dropped)
   direct: --url <u> (may use {version})  --feed <u>  --version-json <path>
-          --version-pattern <app_{version}.deb>  --url-json <path>  --checksum-json <path>
-  apt:    --repo <u>  --suite <s>  --component <c>  --package <p>  --arch <a>  --key <file>
+          --version-pattern <app_{version}.deb>  --version-regex <regex>
+          --url-json <path>  --checksum-json <path>
+  apt:    --repo <u>  --suite <s>  --component <c>  --package <p>  --arch <a>
+          --key-url <u> [--key-fingerprint <fpr>] or --key <file> (presets fetch theirs)
   github: --repo <owner/name>  --asset <pattern>  --prerelease
   Values may use {channel}.
 

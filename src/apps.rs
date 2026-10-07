@@ -6,7 +6,8 @@ use std::process::Command;
 
 use crate::error::{Context, Result, bail};
 use crate::paths::Paths;
-use crate::registry::{App, AppState, Config, SourceConfig, State, presets};
+use crate::net;
+use crate::registry::{App, AppState, Config, Preset, SourceConfig, State, presets};
 use crate::sources::{self, Latest, gpg};
 use crate::style::Style;
 use crate::version::DebVersion;
@@ -18,6 +19,8 @@ pub struct Flags {
     pub source: Option<String>,
     pub channel: Option<String>,
     pub key: Option<String>,
+    pub key_url: Option<String>,
+    pub key_fingerprint: Option<String>,
     pub pkgname: Option<String>,
     pub provides: Option<Vec<String>>,
     pub conflicts: Option<Vec<String>>,
@@ -27,6 +30,7 @@ pub struct Flags {
     pub feed: Option<String>,
     pub version_json: Option<String>,
     pub version_pattern: Option<String>,
+    pub version_regex: Option<String>,
     pub url_json: Option<String>,
     pub checksum_json: Option<String>,
     pub repo: Option<String>,
@@ -62,6 +66,8 @@ pub fn parse_flags(args: &[String]) -> Result<(Vec<String>, Flags)> {
                     "--source" => f.source = Some(v),
                     "--channel" => f.channel = Some(v),
                     "--key" => f.key = Some(v),
+                    "--key-url" => f.key_url = Some(v),
+                    "--key-fingerprint" => f.key_fingerprint = Some(v),
                     "--pkgname" => f.pkgname = Some(v),
                     "--provides" => f.provides = Some(list(&v)),
                     "--conflicts" => f.conflicts = Some(list(&v)),
@@ -71,6 +77,7 @@ pub fn parse_flags(args: &[String]) -> Result<(Vec<String>, Flags)> {
                     "--feed" => f.feed = Some(v),
                     "--version-json" => f.version_json = Some(v),
                     "--version-pattern" => f.version_pattern = Some(v),
+                    "--version-regex" => f.version_regex = Some(v),
                     "--url-json" => f.url_json = Some(v),
                     "--checksum-json" => f.checksum_json = Some(v),
                     "--repo" => f.repo = Some(v),
@@ -112,6 +119,7 @@ fn source_from_flags(kind: &str, f: &Flags) -> Result<SourceConfig> {
                 feed: f.feed.clone(),
                 version_json: f.version_json.clone(),
                 version_pattern: f.version_pattern.clone(),
+                version_regex: f.version_regex.clone(),
                 url_json: f.url_json.clone(),
                 checksum_json: f.checksum_json.clone(),
                 default_channel: None,
@@ -146,12 +154,13 @@ fn update_source(src: &mut SourceConfig, f: &Flags) -> Result<()> {
         }
     };
     match src {
-        SourceConfig::Direct { url, feed, version_json, version_pattern, url_json, checksum_json, .. } => {
+        SourceConfig::Direct { url, feed, version_json, version_pattern, version_regex, url_json, checksum_json, .. } => {
             stray(&[("--repo", f.repo.is_some()), ("--suite", f.suite.is_some()), ("--asset", f.asset.is_some())])?;
             set(url, &f.url);
             set(feed, &f.feed);
             set(version_json, &f.version_json);
             set(version_pattern, &f.version_pattern);
+            set(version_regex, &f.version_regex);
             set(url_json, &f.url_json);
             set(checksum_json, &f.checksum_json);
         }
@@ -189,23 +198,56 @@ fn update_source(src: &mut SourceConfig, f: &Flags) -> Result<()> {
 }
 
 /// Copies a signing key into the config dir, checking its fingerprint when one is known.
-fn import_key(name: &str, key: &Path, expected: Option<&str>, paths: &Paths) -> Result<String> {
+/// `label` names where the key came from in messages (its file or URL).
+fn import_key(name: &str, key: &Path, label: &str, expected: Option<&str>, paths: &Paths) -> Result<String> {
     let fprs = gpg::fingerprints(key, &paths.cache.join("gnupg").join("check"))?;
     if fprs.is_empty() {
-        bail!("{} holds no public key", key.display());
+        bail!("{label} holds no public key");
     }
     if let Some(want) = expected {
         let want = want.replace(' ', "").to_ascii_uppercase();
         if !fprs.iter().any(|f| f.eq_ignore_ascii_case(&want)) {
-            bail!("{} has fingerprint {}, but {name}'s published key is {want}; not using it", key.display(), fprs.join(", "));
+            bail!("the key from {label} has fingerprint {}, but {name}'s published key is {want}; not using it", fprs.join(", "));
         }
     }
     let rel = format!("keys/{name}.asc");
     let dest = paths.config.join(&rel);
     fs::create_dir_all(dest.parent().unwrap()).context(paths.config.display())?;
     fs::copy(key, &dest).context(dest.display())?;
-    println!("Using signing key {} (fingerprint {})", key.display(), fprs.join(", "));
+    match expected {
+        Some(_) => println!("Signing key checked: fingerprint {} matches", fprs.join(", ")),
+        None => println!(
+            "Signing key fingerprint {}. Nothing to check it against, so it is trusted as is; \
+             compare it with the one the vendor publishes, or pin it with --key-fingerprint.",
+            fprs.join(", ")
+        ),
+    }
     Ok(rel)
+}
+
+/// Gets an apt source's signing key from --key, --key-url or the preset, checks its
+/// fingerprint when one is known (--key-fingerprint, else the preset's), and stores it
+/// in the config dir. None when nothing says where the key is.
+fn obtain_key(name: &str, f: &Flags, preset: Option<&Preset>, paths: &Paths) -> Result<Option<String>> {
+    let expected = f.key_fingerprint.as_deref().or_else(|| preset.and_then(|p| p.key_fingerprint.as_deref()));
+    if let Some(file) = &f.key {
+        return import_key(name, Path::new(file), file, expected, paths).map(Some);
+    }
+    let Some(url) = f.key_url.as_deref().or_else(|| preset.and_then(|p| p.key_url.as_deref())) else {
+        return Ok(None);
+    };
+    println!("Downloading the signing key from {url}");
+    let bytes = net::get_bytes(url, &[])?;
+    let tmp = paths.cache.join("keys").join(format!("{name}.download.asc"));
+    fs::create_dir_all(tmp.parent().unwrap()).context(paths.cache.display())?;
+    fs::write(&tmp, bytes).context(tmp.display())?;
+    let rel = import_key(name, &tmp, url, expected, paths);
+    let _ = fs::remove_file(&tmp);
+    rel.map(Some)
+}
+
+fn has_key_flags(f: &Flags) -> bool {
+    f.key.is_some() || f.key_url.is_some() || f.key_fingerprint.is_some()
 }
 
 /// Applies the app level flags shared by add and set.
@@ -253,18 +295,14 @@ pub fn add(name: &str, f: &Flags) -> Result<()> {
         update_source(&mut source, f)?;
     }
     if let SourceConfig::Apt { key, .. } = &mut source {
-        match &f.key {
-            Some(file) => *key = Some(import_key(name, Path::new(file), preset.and_then(|p| p.key_fingerprint.as_deref()), &paths)?),
-            None => {
-                let hint = preset
-                    .and_then(|p| p.key_url.as_deref())
-                    .map(|u| format!("\nIts key is published at {u}; download it, for example:\n  curl -fsSLo {name}.asc {u}\nthen run this again with --key {name}.asc"))
-                    .unwrap_or_default();
-                bail!("an apt source needs the repository's signing key: add --key <file>{hint}");
-            }
+        match obtain_key(name, f, preset, &paths)? {
+            Some(rel) => *key = Some(rel),
+            None => bail!(
+                "an apt source needs the repository's signing key: give --key-url <url> (add --key-fingerprint <fpr> to pin it) or --key <file>"
+            ),
         }
-    } else if f.key.is_some() {
-        bail!("--key only applies to apt sources");
+    } else if has_key_flags(f) {
+        bail!("--key, --key-url and --key-fingerprint only apply to apt sources");
     }
     let mut app = App::new(source);
     apply_app_flags(&mut app, f);
@@ -310,14 +348,15 @@ pub fn set(name: Option<&str>, f: &Flags) -> Result<()> {
     } else {
         update_source(&mut app.source, f)?;
     }
-    if let Some(file) = &f.key {
+    if has_key_flags(f) {
         let SourceConfig::Apt { .. } = &app.source else {
-            bail!("--key only applies to apt sources");
+            bail!("--key, --key-url and --key-fingerprint only apply to apt sources");
         };
-        let expected = presets().get(name).and_then(|p| p.key_fingerprint.clone());
-        let rel = import_key(name, Path::new(file), expected.as_deref(), &paths)?;
-        if let SourceConfig::Apt { key, .. } = &mut app.source {
-            *key = Some(rel);
+        let all = presets();
+        if let Some(rel) = obtain_key(name, f, all.get(name), &paths)? {
+            if let SourceConfig::Apt { key, .. } = &mut app.source {
+                *key = Some(rel);
+            }
         }
     }
     apply_app_flags(app, f);

@@ -81,6 +81,10 @@ pub enum SourceConfig {
         /// highest matching version wins.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version_pattern: Option<String>,
+        /// A regex matched against a text feed; the first capture group (or the whole
+        /// match) is a version, and the highest one wins.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version_regex: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url_json: Option<String>,
         /// A sha256 (64 hex) or sha512 (128 hex) checksum for the deb.
@@ -128,8 +132,8 @@ impl SourceConfig {
     /// Whether any of the source's values use {channel}.
     pub fn uses_channel(&self) -> bool {
         match self {
-            SourceConfig::Direct { url, feed, version_json, version_pattern, url_json, checksum_json, .. } => {
-                [url, feed, version_json, version_pattern, url_json, checksum_json]
+            SourceConfig::Direct { url, feed, version_json, version_pattern, version_regex, url_json, checksum_json, .. } => {
+                [url, feed, version_json, version_pattern, version_regex, url_json, checksum_json]
                     .iter()
                     .any(|v| v.as_deref().is_some_and(|s| s.contains("{channel}")))
             }
