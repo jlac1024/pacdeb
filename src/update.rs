@@ -152,6 +152,14 @@ fn build_and_record(name: &str, app: &App, deb: &Path, latest: Option<&Latest>, 
     let built = convert::build_package(deb, direct, None, Some(app), prev.as_ref())?;
     record(state, name, &built, latest);
     state.save(&paths.state)?;
+    // Keep the new name from now on, so it does not change back if the clash goes away.
+    if let Some(pkgname) = &built.renamed {
+        let mut config = Config::load(&paths.config)?;
+        if let Some(a) = config.apps.get_mut(name) {
+            a.pkgname = Some(pkgname.clone());
+            config.save(&paths.config)?;
+        }
+    }
     Ok(built)
 }
 
@@ -185,9 +193,13 @@ pub fn install_app(name: &str, direct: bool) -> Result<()> {
     }
     let channel = config.channel(app);
     let latest = sources::latest(name, &app.source, channel.as_deref(), &paths.config, &paths.cache)?;
-    // Reuse the last build when it is already the newest version.
+    // Reuse the last build when it is already the newest version under the app's
+    // current package name (it may have been renamed since).
     let last = state.apps.get(name).and_then(|s| {
+        let pkgname = app.pkgname.as_deref()?;
         let file = s.packages.last().filter(|p| Path::new(p).exists())?;
+        let file_name = Path::new(file).file_name()?.to_string_lossy();
+        file_name.strip_prefix(pkgname)?.strip_prefix('-')?.starts_with(|c: char| c.is_ascii_digit()).then_some(())?;
         (latest.version.is_some() && s.deb_version == latest.version).then(|| PathBuf::from(file))
     });
     let pkg = match last {
@@ -222,6 +234,8 @@ pub fn install_file(deb: &Path, direct: bool) -> Result<()> {
     };
     let built = build_and_record(&name, &app, deb, None, direct, &paths, &mut state)?;
     if registered {
+        let mut app = app;
+        app.pkgname = built.renamed.clone();
         config.apps.insert(name.clone(), app);
         config.save(&paths.config)?;
         println!("Now tracking {name} as a manual app; give it a source with 'pacdeb set {name} --source ...' to get updates");
@@ -234,7 +248,7 @@ mod tests {
     use super::*;
 
     fn built(path: &str, v: &str, rel: u32) -> Built {
-        Built { path: PathBuf::from(path), deb_version: v.into(), pkgrel: rel }
+        Built { path: PathBuf::from(path), deb_version: v.into(), pkgrel: rel, renamed: None }
     }
 
     #[test]

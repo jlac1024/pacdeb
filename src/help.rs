@@ -100,7 +100,8 @@ Sources:
 
 Options for any app:
   --channel <name>           Release channel, filled in for {channel} in any value
-  --pkgname <name>           Package name to build instead of the deb's
+  --pkgname <name>           Package name to build instead of the deb's. Without it,
+                             a name a repo or the AUR also uses gets a -deb suffix
   --provides a,b             Extra provides, e.g. to stand in for an AUR package
   --conflicts a,b            Packages this one replaces
   --depends a,b              Dependencies to add

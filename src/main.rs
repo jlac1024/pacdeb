@@ -1,3 +1,4 @@
+mod clash;
 mod cli;
 mod control;
 mod convert;
