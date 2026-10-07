@@ -12,7 +12,7 @@ use crate::human;
 use crate::model::NodeKind;
 use crate::paths::Paths;
 use crate::style::Style;
-use crate::translate::{self, Action, DepMap, Outcome, Translation, Warning};
+use crate::translate::{self, Action, Outcome, Tables, Translation, Warning};
 
 pub struct Options {
     pub deb: PathBuf,
@@ -24,9 +24,9 @@ pub struct Options {
 pub fn run(opts: &Options) -> Result<()> {
     if opts.dry_run {
         let paths = Paths::from_env()?;
-        let depmap = DepMap::load(&paths.config)?;
+        let tables = Tables::load(&paths.config)?;
         let mut deb = Deb::open(&opts.deb)?;
-        let t = translate::translate(&mut deb, &depmap, 1, &translate::LiveSystem).context(opts.deb.display())?;
+        let t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(opts.deb.display())?;
         let backend = if opts.direct { "direct (.pkg.tar.zst written by Ferry)" } else { "makepkg (PKGBUILD)" };
         let mut text = format!("Backend: {backend}\n");
         if let Some(out) = &opts.out {
@@ -51,9 +51,9 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Resul
         missing
     };
     let paths = Paths::from_env()?;
-    let depmap = DepMap::load(&paths.config)?;
+    let tables = Tables::load(&paths.config)?;
     let mut deb = Deb::open(deb_path)?;
-    let t = translate::translate(&mut deb, &depmap, 1, &translate::LiveSystem).context(deb_path.display())?;
+    let t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(deb_path.display())?;
 
     let p = &t.package;
     let style = Style::for_stdout();
@@ -326,7 +326,7 @@ mod tests {
         .entry(TestEntry::file("./opt/Demo/demo", 0o755, b"x"))
         .build();
         let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
-        let t = translate::translate(&mut deb, &DepMap::builtin(), 1, &BareSystem).unwrap();
+        let t = translate::translate(&mut deb, &translate::Tables::builtin(), 1, &BareSystem).unwrap();
         let text = report(&t, Style::plain());
         for want in [
             "Would build demo 1.0-1 for x86_64 (from deb version 1.0-1)",

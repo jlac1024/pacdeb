@@ -388,6 +388,17 @@ impl Analyzer<'_> {
     }
 
     fn eval_test(&self, words: &[String]) -> Tri {
+        // debhelper asks dpkg's own service state. A Ferry package is always a first
+        // install as far as that state goes: nothing was installed before, and
+        // was-enabled defaults to true for new installs (debhelper's own comment says so).
+        if words.first().is_some_and(|w| w == "deb-systemd-helper") {
+            let verb = words.iter().skip(1).find(|w| !w.starts_with('-')).map(String::as_str);
+            match verb {
+                Some("debian-installed") => return Tri::No,
+                Some("was-enabled") => return Tri::Yes,
+                _ => {}
+            }
+        }
         match words.first().map(String::as_str) {
             Some("!") => self.eval_test(&words[1..]).not(),
             Some("[") | Some("[[") => {
@@ -1002,9 +1013,18 @@ fn deb_systemd_helper(args: &[String]) -> Outcome {
     }
 }
 
-/// `deb-systemd-invoke [--user] VERB UNIT...`.
+/// `deb-systemd-invoke [--user] VERB UNIT...`. It only acts on units that are enabled,
+/// so its starts count only together with an enable.
 fn deb_systemd_invoke(args: &[String]) -> Outcome {
-    deb_systemd_helper(args)
+    match deb_systemd_helper(args) {
+        Outcome::Service(steps) => Outcome::Service(
+            steps
+                .into_iter()
+                .map(|s| if s.verb == "start" { ServiceStep { verb: "start-if-enabled".into(), ..s } } else { s })
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 /// `invoke-rc.d [--quiet] NAME ACTION` and `service NAME ACTION`.

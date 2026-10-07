@@ -74,7 +74,7 @@ pub fn write<R: Read + Seek>(deb: &mut Deb<R>, pkg: &Package, root: &Path) -> Re
 mod tests {
     use super::*;
     use crate::deb::testutil::{DebBuilder, TestEntry};
-    use crate::translate::{self, DepMap};
+    use crate::translate;
     use std::io::Cursor;
     use std::os::unix::fs::MetadataExt;
 
@@ -95,7 +95,7 @@ mod tests {
             .entry(TestEntry::hardlink("./opt/Demo/demo2", "./opt/Demo/demo"))
             .build();
         let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
-        let t = translate::translate(&mut deb, &DepMap::builtin(), 1, &translate::tests::BareSystem).unwrap();
+        let t = translate::translate(&mut deb, &translate::Tables::builtin(), 1, &translate::tests::BareSystem).unwrap();
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox/test-tree");
         let _ = fs::remove_dir_all(&root);

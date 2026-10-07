@@ -41,6 +41,11 @@ pub fn rewrite(text: &str) -> Option<Rewrite> {
                     out.push_str(line);
                 }
             }
+        } else if !trimmed.starts_with('#') && trimmed.contains("pam_selinux.so") {
+            // Arch has no SELinux module; PAM logs a "faulty module" error for every
+            // session that loads one, even when the line tells it to ignore that.
+            changes.push("removed a pam_selinux line (Arch has no SELinux)".to_string());
+            continue;
         } else if trimmed.contains("envfile=/etc/default/locale") {
             // Debian keeps the locale in /etc/default/locale, Arch in /etc/locale.conf;
             // both are KEY=value lines that pam_env reads the same way.
@@ -81,13 +86,12 @@ session required pam_env.so readenv=1 user_readenv=1 envfile=/etc/default/locale
 auth      include   system-auth
 account   include   system-auth
 password  include   system-auth
-session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so close
 session required pam_limits.so
 session   include   system-login
 session required pam_env.so readenv=1 user_readenv=1 envfile=/etc/locale.conf
 "
         );
-        assert_eq!(r.changes.len(), 5);
+        assert_eq!(r.changes.len(), 6);
         assert!(r.unknown.is_empty());
     }
 
