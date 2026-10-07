@@ -9,9 +9,11 @@ use crate::control::Control;
 use crate::deb::{DataEntry, Deb, EntryKind, MAINTAINER_SCRIPTS};
 use crate::error::{Context, Result};
 use crate::relation::{RELATION_FIELDS, format_group, parse_relations};
+use crate::version::{ArchVersion, DebVersion};
 
 /// Long lists (icons, symlinks) are cut off after this many lines.
 const LIST_LIMIT: usize = 20;
+const PACMAN_VERSION: &str = "Pacman version";
 
 pub fn run(path: &Path) -> Result<()> {
     let mut deb = Deb::open(path)?;
@@ -43,13 +45,20 @@ fn control_section<R>(out: &mut String, deb: &Deb<R>) {
     let width = fields
         .iter()
         .map(|(n, _)| n.len())
-        .chain(["Description".len()])
+        .chain([PACMAN_VERSION.len()])
         .max()
         .unwrap_or(0)
         + 2;
     for (name, value) in fields {
         push_field(out, name, value, width);
     }
+    // Shown with pkgrel 1, which is what a first build of this deb would get.
+    let pacman_version = match deb.control.get("Version").map(DebVersion::parse) {
+        Some(Ok(v)) => ArchVersion::from_debian(&v, 1).to_string(),
+        Some(Err(e)) => format!("cannot map: {e}"),
+        None => "cannot map: no Version field".to_string(),
+    };
+    push_field(out, PACMAN_VERSION, &pacman_version, width);
     let archives = format!("control {}, data {}", deb.control_compression, deb.data_compression);
     push_field(out, "Archives", &archives, width);
     if let Some((synopsis, long)) = deb.control.description() {
@@ -298,10 +307,11 @@ Description: Demo app
         let text = report(&deb, &entries);
 
         let expected = [
-            "Package:      demo",
-            "Version:      1:2.0-1",
-            "Archives:     control xz, data xz",
-            "Description:  Demo app\n              Longer text.\n\n              Second paragraph.\n",
+            "Package:        demo",
+            "Version:        1:2.0-1",
+            "Pacman version: 1:2.0-1",
+            "Archives:       control xz, data xz",
+            "Description:    Demo app\n                Longer text.\n\n                Second paragraph.\n",
             "\nDepends:\n  libc6 (>= 2.34)\n  libasound2 | libasound2t64\n",
             "\nRecommends:\n  qemu-system-x86\n",
             "Files: 4 files, 1 directory, 1 symlink, 2.0 KiB",
@@ -321,11 +331,12 @@ Description: Demo app
 
     #[test]
     fn shows_unparseable_relations_instead_of_failing() {
-        let bytes = DebBuilder::new("Package: a\nVersion: 1\nArchitecture: all\nDepends: foo (>= 1\n").build();
+        let bytes = DebBuilder::new("Package: a\nVersion: v1\nArchitecture: all\nDepends: foo (>= 1\n").build();
         let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
         let entries = deb.data_entries().unwrap();
         let text = report(&deb, &entries);
         assert!(text.contains("cannot parse: unclosed '('"), "{text}");
+        assert!(text.contains("Pacman version: cannot map: version 'v1'"), "{text}");
         assert!(text.contains("Maintainer scripts:\n  none\n"), "{text}");
     }
 }
