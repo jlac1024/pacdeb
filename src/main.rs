@@ -4,6 +4,7 @@ mod deb;
 mod error;
 mod inspect;
 mod relation;
+mod version;
 
 use std::process::ExitCode;
 
