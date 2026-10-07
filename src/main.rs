@@ -10,6 +10,7 @@ mod install;
 mod model;
 mod paths;
 mod relation;
+mod style;
 mod translate;
 mod version;
 

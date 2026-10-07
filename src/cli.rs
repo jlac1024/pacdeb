@@ -120,7 +120,7 @@ fn install(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     finish(crate::convert::build_package(&target, direct, None).and_then(|pkg| {
-        println!("Built {}", pkg.display());
+        println!("{} {}", crate::style::Style::for_stdout().good("Built"), pkg.display());
         crate::install::install(&pkg)
     }))
 }
@@ -134,7 +134,7 @@ fn finish(result: Result<()>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("ferry: {e}");
+            eprintln!("{} {e}", crate::style::Style::for_stderr().bad("ferry:"));
             ExitCode::FAILURE
         }
     }

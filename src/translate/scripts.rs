@@ -34,6 +34,9 @@ pub enum Outcome {
     AptRepo,
     /// The command sits in a branch that never runs for this package.
     Skipped(String),
+    /// Whether the command runs depends on the system, not the package, so it is left
+    /// out. `condition` is in plain words; `would` says what it would have done.
+    Conditional { condition: String, would: String },
     Unknown(String),
 }
 
@@ -130,13 +133,27 @@ impl Tri {
     }
 }
 
+/// A condition in plain words: all of it, and only the parts the package cannot decide.
+#[derive(Debug, Clone, Default)]
+struct CondText {
+    all: String,
+    unknown: String,
+}
+
+impl CondText {
+    fn negated(&self) -> CondText {
+        let not = |s: &str| if s.is_empty() { String::new() } else { format!("not ({s})") };
+        CondText { all: not(&self.all), unknown: not(&self.unknown) }
+    }
+}
+
 #[derive(Debug)]
 enum Frame {
-    If { now: Tri, any: Tri, text: String },
+    If { now: Tri, any: Tri, text: CondText },
     Case { word: Option<String>, now: Tri, any: Tri },
     Loop { text: String },
     /// A command that only runs after `&&` or `||`.
-    Gate { now: Tri, text: String },
+    Gate { now: Tri, text: CondText },
 }
 
 impl Frame {
@@ -146,9 +163,12 @@ impl Frame {
             Frame::Loop { .. } => Tri::Maybe,
         }
     }
-    fn text(&self) -> String {
+    /// The condition as it matters at `want`: only the undecided parts for Maybe.
+    fn text(&self, want: Tri) -> String {
         match self {
-            Frame::If { text, .. } | Frame::Gate { text, .. } => text.clone(),
+            Frame::If { text, .. } | Frame::Gate { text, .. } => {
+                if want == Tri::Maybe { text.unknown.clone() } else { text.all.clone() }
+            }
             Frame::Case { word, .. } => format!("the case on '{}' matches", word.as_deref().unwrap_or("?")),
             Frame::Loop { text } => format!("inside the loop '{text}'"),
         }
@@ -178,9 +198,15 @@ impl Analyzer<'_> {
 
     /// The conditions that hold the current command at `want` (Maybe or No).
     fn conditions(&self, want: Tri) -> String {
-        let mut parts: Vec<String> = self.frames.iter().filter(|f| f.now() == want).map(Frame::text).collect();
+        let mut parts: Vec<String> = self
+            .frames
+            .iter()
+            .filter(|f| f.now() == want)
+            .map(|f| f.text(want))
+            .filter(|t| !t.is_empty())
+            .collect();
         if want == Tri::Maybe {
-            parts.extend(self.guards.iter().map(|g| format!("{g} did not end the script first")));
+            parts.extend(self.guards.iter().cloned());
         }
         parts.join(" and ")
     }
@@ -231,8 +257,7 @@ impl Analyzer<'_> {
                         k += 1;
                     }
                     let cond = &cmds[start..k];
-                    let value = self.eval_list(cond);
-                    let text = list_text(cond);
+                    let (value, text) = self.eval_list(cond);
                     if first == "if" {
                         self.frames.push(Frame::If { now: value, any: value, text });
                     } else if let Some(Frame::If { now, any, text: t }) = self.frames.last_mut() {
@@ -252,7 +277,7 @@ impl Analyzer<'_> {
                 "else" => {
                     if let Some(Frame::If { now, any, text }) = self.frames.last_mut() {
                         *now = any.not();
-                        *text = format!("not ({text})");
+                        *text = text.negated();
                     }
                     cmds[k].words.remove(0);
                     continue;
@@ -280,10 +305,10 @@ impl Analyzer<'_> {
                 "" | "}" | ")" => {}
                 _ if is_test(&cmds[k].words) && matches!(cmds[k].sep, Sep::And | Sep::Or) && k + 1 < cmds.len() => {
                     // `[ -x x ] && cmd` and `[ -x x ] || cmd`: the next command is gated.
-                    let value = self.eval_test(&cmds[k].words);
+                    let (value, text) = self.eval_list(&cmds[k..=k]);
                     let (now, text) = match cmds[k].sep {
-                        Sep::And => (value, cmds[k].text()),
-                        _ => (value.not(), format!("not ({})", cmds[k].text())),
+                        Sep::And => (value, text),
+                        _ => (value.not(), text.negated()),
                     };
                     self.frames.push(Frame::Gate { now, text });
                     let gated = cmds[k + 1].clone();
@@ -300,11 +325,15 @@ impl Analyzer<'_> {
         }
     }
 
-    fn eval_list(&self, cmds: &[Cmd]) -> Tri {
+    /// Decides a condition list such as `[ -f x ] && command -v y`, and describes it.
+    fn eval_list(&self, cmds: &[Cmd]) -> (Tri, CondText) {
         let mut value = Tri::Yes;
         let mut sep = Sep::And;
+        let mut all = String::new();
+        let mut unknown = String::new();
         for (i, c) in cmds.iter().enumerate() {
             let v = self.eval_test(&c.words);
+            let joiner = if sep == Sep::Or { " or " } else { " and " };
             value = if i == 0 {
                 v
             } else {
@@ -314,9 +343,20 @@ impl Analyzer<'_> {
                     _ => Tri::Maybe,
                 }
             };
+            let words = humanize(&c.words);
+            if i > 0 {
+                all.push_str(joiner);
+            }
+            all.push_str(&words);
+            if v == Tri::Maybe {
+                if !unknown.is_empty() {
+                    unknown.push_str(joiner);
+                }
+                unknown.push_str(&words);
+            }
             sep = c.sep;
         }
-        value
+        (value, CondText { all, unknown })
     }
 
     fn eval_test(&self, words: &[String]) -> Tri {
@@ -394,7 +434,7 @@ impl Analyzer<'_> {
                 match active {
                     Tri::Yes if first == "exit" => self.stopped = true,
                     Tri::Yes => self.returned = true,
-                    Tri::Maybe => self.guards.push(format!("the {first} on line {}", line.number)),
+                    Tri::Maybe => self.guards.push(format!("the {first} on line {} did not stop the script first", line.number)),
                     Tri::No => {}
                 }
                 return;
@@ -414,19 +454,16 @@ impl Analyzer<'_> {
         let outcome = match active {
             Tri::Yes => outcome,
             Tri::Maybe => match outcome {
-                Outcome::Actions(actions) => Outcome::Unknown(format!(
-                    "runs only if {}, which depends on the system; it would add {}",
-                    self.conditions(Tri::Maybe),
-                    actions.iter().map(describe_action).collect::<Vec<_>>().join("; ")
-                )),
-                Outcome::Unknown(why) => {
-                    Outcome::Unknown(format!("{why}; runs only if {}", self.conditions(Tri::Maybe)))
-                }
+                Outcome::Actions(actions) => Outcome::Conditional {
+                    condition: self.conditions(Tri::Maybe),
+                    would: format!("add {}", actions.iter().map(describe_action).collect::<Vec<_>>().join("; ")),
+                },
+                Outcome::Unknown(why) => Outcome::Conditional { condition: self.conditions(Tri::Maybe), would: why },
                 other => other,
             },
             Tri::No => match outcome {
                 Outcome::Actions(_) | Outcome::Unknown(_) => {
-                    Outcome::Skipped(format!("does not run, {} is false for this package", self.conditions(Tri::No)))
+                    Outcome::Skipped(format!("does not run; this is false for the package: {}", self.conditions(Tri::No)))
                 }
                 _ => return,
             },
@@ -964,21 +1001,49 @@ impl Cmd {
     }
 }
 
-/// Shows a list of commands with the separators between them.
-fn list_text(cmds: &[Cmd]) -> String {
-    let mut out = String::new();
-    for (i, c) in cmds.iter().enumerate() {
-        out.push_str(&c.text());
-        if i + 1 < cmds.len() {
-            out.push_str(match c.sep {
-                Sep::And => " && ",
-                Sep::Or => " || ",
-                Sep::Pipe => " | ",
-                _ => "; ",
-            });
-        }
+/// Describes one test command in plain words, such as "/etc/foo exists".
+fn humanize(words: &[String]) -> String {
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    match w.as_slice() {
+        ["!", ..] => format!("not ({})", humanize(&words[1..])),
+        ["[" | "[[", inner @ .., "]" | "]]"] | ["test", inner @ ..] => bracket_words(inner),
+        ["command", "-v", x] | ["which", x] | ["hash", x] | ["type", x] => format!("{x} is installed"),
+        _ => format!("'{}' succeeds", w.join(" ")),
     }
-    out
+}
+
+fn bracket_words(a: &[&str]) -> String {
+    const FILE_OPS: [&str; 9] = ["-e", "-f", "-x", "-d", "-L", "-h", "-r", "-s", "-w"];
+    match a {
+        ["!", op, p] if FILE_OPS.contains(op) => file_test(op, p, true),
+        [op, p] if FILE_OPS.contains(op) => file_test(op, p, false),
+        ["-z", s] => format!("'{s}' is empty"),
+        ["-n", s] => format!("'{s}' is not empty"),
+        [x, "=" | "==", y] => match readlink_of(x) {
+            Some(link) => format!("{link} points to {y}"),
+            None => format!("{x} is '{y}'"),
+        },
+        [x, "!=", y] => format!("{x} is not '{y}'"),
+        _ => format!("[ {} ]", a.join(" ")),
+    }
+}
+
+fn file_test(op: &str, path: &str, negated: bool) -> String {
+    let (yes, no) = match op {
+        "-d" => ("is a directory", "is not a directory"),
+        "-L" | "-h" => ("is a symlink", "is not a symlink"),
+        "-x" => ("is executable", "is not executable"),
+        "-s" => ("is not empty", "is empty or missing"),
+        "-r" => ("is readable", "is not readable"),
+        "-w" => ("is writable", "is not writable"),
+        _ => ("exists", "does not exist"),
+    };
+    format!("{path} {}", if negated { no } else { yes })
+}
+
+/// The path in `$(readlink <path>)`, as left by `expand` for display.
+fn readlink_of(word: &str) -> Option<&str> {
+    Some(word.strip_prefix("$(readlink ")?.strip_suffix(')')?.trim())
 }
 
 fn split_commands(toks: Vec<Tok>) -> Vec<Cmd> {
@@ -1144,7 +1209,18 @@ fn expand(chars: &[char], i: usize, vars: &HashMap<String, String>, word: &mut S
             let inner: String = chars[(i + 2).min(j)..j.saturating_sub(1).max(i + 2)].iter().collect();
             match dirname_of(&inner, vars) {
                 Some(dir) => word.push_str(&dir),
-                None => word.extend(&chars[i..j]),
+                None => {
+                    // Still unresolved (it keeps the "$("), but with known variables
+                    // filled in so messages show real paths.
+                    let shown: Vec<String> = tokenize(&inner, vars)
+                        .into_iter()
+                        .filter_map(|t| match t {
+                            Tok::Word(w) => Some(w),
+                            _ => None,
+                        })
+                        .collect();
+                    word.push_str(&format!("$({})", shown.join(" ")));
+                }
             }
             j
         }
@@ -1238,6 +1314,7 @@ mod tests {
             Outcome::Handled(_) => "handled",
             Outcome::AptRepo => "apt",
             Outcome::Skipped(_) => "skipped",
+            Outcome::Conditional { .. } => "conditional",
             Outcome::Unknown(_) => "unknown",
         }
     }
@@ -1355,10 +1432,17 @@ fi
 "#;
         let got = run("postinst", script);
         let summary: Vec<(usize, &str)> = got.iter().map(|(n, _, o)| (*n, kind(o))).collect();
-        assert_eq!(summary, [(3, "actions"), (6, "skipped"), (8, "unknown"), (10, "unknown"), (12, "actions"), (14, "unknown")]);
-        let Outcome::Unknown(why) = &got[5].2 else { unreachable!() };
-        assert!(why.contains("runs only if [ -f /etc/apparmor.d/abi/4.0 ]"), "{why}");
-        assert!(why.contains("/etc/apparmor.d/app with the script's"), "{why}");
+        assert_eq!(
+            summary,
+            [(3, "actions"), (6, "skipped"), (8, "conditional"), (10, "conditional"), (12, "actions"), (14, "conditional")]
+        );
+        let Outcome::Conditional { condition, would } = &got[5].2 else { unreachable!() };
+        assert_eq!(condition, "/etc/apparmor.d/abi/4.0 exists");
+        assert!(would.contains("/etc/apparmor.d/app with the script's"), "{would}");
+        let Outcome::Skipped(why) = &got[1].2 else { unreachable!() };
+        assert!(why.ends_with("false for the package: /opt/App/missing is executable"), "{why}");
+        let Outcome::Conditional { condition, .. } = &got[2].2 else { unreachable!() };
+        assert_eq!(condition, "'$ROOTX' is empty");
     }
 
     #[test]
@@ -1406,8 +1490,8 @@ one_liner
         let script = "if [ ! -d /etc/foo ]; then\n  exit 0\nfi\nln -s /opt/App/app /usr/bin/app\n";
         let got = run("postinst", script);
         assert_eq!(got.len(), 1);
-        let Outcome::Unknown(why) = &got[0].2 else { panic!("{got:?}") };
-        assert!(why.contains("the exit on line 2 did not end the script first"), "{why}");
+        let Outcome::Conditional { condition, .. } = &got[0].2 else { panic!("{got:?}") };
+        assert_eq!(condition, "the exit on line 2 did not stop the script first");
 
         let got = run("postinst", "exit 0\nln -s /opt/App/app /usr/bin/app\n");
         assert!(got.is_empty(), "{got:?}");
@@ -1434,6 +1518,27 @@ one_liner
         assert_eq!(cmds[0].redirects, ["/etc/f", "/var/log/y", "in", "/dev/null"]);
         let seps: Vec<Sep> = split_commands(tokenize("a && b || c; d", &vars)).iter().map(|c| c.sep).collect();
         assert_eq!(seps, [Sep::And, Sep::Or, Sep::Semi, Sep::End]);
+    }
+
+    #[test]
+    fn describes_conditions_in_plain_words() {
+        let w = |s: &str| -> Vec<String> { s.split(' ').map(String::from).collect() };
+        let cases = [
+            ("[ -f /etc/x ]", "/etc/x exists"),
+            ("[ ! -e /usr/bin/ccd ]", "/usr/bin/ccd does not exist"),
+            ("[ -L /usr/bin/ccd ]", "/usr/bin/ccd is a symlink"),
+            ("[ -d /etc/apt/sources.list.d ]", "/etc/apt/sources.list.d is a directory"),
+            ("command -v aa-enabled", "aa-enabled is installed"),
+            ("aa-enabled --quiet", "'aa-enabled --quiet' succeeds"),
+            ("! aa-enabled", "not ('aa-enabled' succeeds)"),
+            ("test -x /opt/a", "/opt/a is executable"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(humanize(&w(input)), want, "{input:?}");
+        }
+        let vars = HashMap::from([("L".to_string(), "/usr/bin/ccd".to_string())]);
+        let words: Vec<String> = split_commands(tokenize("[ \"$(readlink \"$L\")\" = x ]", &vars)).remove(0).words;
+        assert_eq!(humanize(&words), "/usr/bin/ccd points to x");
     }
 
     #[test]
