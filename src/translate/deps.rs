@@ -1,7 +1,8 @@
 //! Debian relationship fields to pacman depends and optdepends.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -66,7 +67,14 @@ pub struct Deps {
     pub unmapped: Vec<String>,
 }
 
-pub fn translate(control: &Control, deb_arch: &str, map: &DepMap) -> Result<Deps> {
+/// `installed` says which Arch packages are installed; when the deb offers
+/// alternatives, an installed one wins over the first one listed.
+pub fn translate(
+    control: &Control,
+    deb_arch: &str,
+    map: &DepMap,
+    installed: impl FnOnce(&[String]) -> HashSet<String>,
+) -> Result<Deps> {
     let mut deps = Deps::default();
     let mut constraints = Vec::new();
     let fields = [
@@ -75,29 +83,56 @@ pub fn translate(control: &Control, deb_arch: &str, map: &DepMap) -> Result<Deps
         ("Recommends", Some("recommended by the deb")),
         ("Suggests", Some("suggested by the deb")),
     ];
+    let mut parsed = Vec::new();
     for (field, optional) in fields {
-        let Some(value) = control.get(field) else {
-            continue;
-        };
-        for group in parse_relations(value).context(field)? {
-            let group: Vec<&Atom> = group.iter().filter(|a| applies_to(a, deb_arch)).collect();
-            if group.is_empty() {
-                continue;
+        if let Some(value) = control.get(field) {
+            let groups: Vec<Vec<Atom>> = parse_relations(value)
+                .context(field)?
+                .into_iter()
+                .map(|g| g.into_iter().filter(|a| applies_to(a, deb_arch)).collect::<Vec<_>>())
+                .filter(|g| !g.is_empty())
+                .collect();
+            parsed.push((field, optional, groups));
+        }
+    }
+
+    let mut choices: Vec<String> = Vec::new();
+    for (_, _, groups) in &parsed {
+        for g in groups.iter().filter(|g| g.len() > 1) {
+            for m in g.iter().filter_map(|a| map.get(&a.name)).filter(|m| !m.is_empty()) {
+                if !choices.iter().any(|c| c == m) {
+                    choices.push(m.to_string());
+                }
             }
-            let shown = format_group(&group.iter().map(|a| (*a).clone()).collect::<Vec<_>>());
-            let Some((atom, arch)) = group.iter().find_map(|a| map.get(&a.name).map(|m| (*a, m))) else {
+        }
+    }
+    let installed = if choices.is_empty() { HashSet::new() } else { installed(&choices) };
+
+    for (field, optional, groups) in &parsed {
+        for group in groups {
+            let shown = format_group(group);
+            let mapped: Vec<(&Atom, &str)> = group.iter().filter_map(|a| map.get(&a.name).map(|m| (a, m))).collect();
+            let Some(&(first_atom, first)) = mapped.first() else {
                 deps.unmapped.push(format!("{field}: {shown}"));
                 continue;
             };
-            if arch.is_empty() {
-                deps.notes.push(format!("{field}: {} is not needed on Arch", atom.name));
+            if first.is_empty() {
+                deps.notes.push(format!("{field}: {} is not needed on Arch", first_atom.name));
                 continue;
+            }
+            let (atom, arch) = mapped
+                .iter()
+                .find(|(_, m)| !m.is_empty() && installed.contains(*m))
+                .copied()
+                .unwrap_or((first_atom, first));
+            if arch != first {
+                deps.notes.push(format!("{field}: picked {arch} from '{shown}' because it is installed"));
             }
             if atom.version.is_some() {
                 constraints.push(atom.to_string());
             }
             let arch = arch.to_string();
-            match optional {
+            match *optional {
                 None if !deps.depends.contains(&arch) => deps.depends.push(arch),
                 Some(reason) if !deps.depends.contains(&arch) && !deps.optdepends.iter().any(|(p, _)| *p == arch) => {
                     deps.optdepends.push((arch, reason.to_string()));
@@ -121,6 +156,20 @@ pub fn translate(control: &Control, deb_arch: &str, map: &DepMap) -> Result<Deps
         }
     }
     Ok(deps)
+}
+
+/// Asks `pacman -Qq` which names are installed. pacman resolves provides and prints
+/// the provider, so the answer is read from which names it reports as missing.
+pub fn pacman_installed(names: &[String]) -> HashSet<String> {
+    let Ok(output) = Command::new("pacman").arg("-Qq").args(names).env("LC_ALL", "C").output() else {
+        return HashSet::new();
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let missing: HashSet<&str> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("error: package '")?.split_once('\'').map(|(n, _)| n))
+        .collect();
+    names.iter().filter(|n| !missing.contains(n.as_str())).cloned().collect()
 }
 
 /// Honors a "[amd64 !i386]" restriction, which binary packages rarely carry.
@@ -196,7 +245,7 @@ mod tests {
              Conflicts: other-app\n",
         )
         .unwrap();
-        let d = translate(&control, "amd64", &m).unwrap();
+        let d = translate(&control, "amd64", &m, |_| HashSet::new()).unwrap();
         assert_eq!(d.depends, ["gtk3", "nss", "alsa-lib"]);
         assert_eq!(
             d.optdepends,
@@ -211,6 +260,23 @@ mod tests {
                 "Conflicts: other-app (Debian names, not carried over)",
             ]
         );
+    }
+
+    #[test]
+    fn prefers_installed_alternatives() {
+        let m = map(&[("portal-gtk", "xdg-desktop-portal-gtk"), ("portal-kde", "xdg-desktop-portal-kde"), ("solo", "solo")]);
+        let control = Control::parse("Package: a\nVersion: 1\nArchitecture: amd64\nDepends: portal-gtk | portal-kde, solo\n").unwrap();
+        let d = translate(&control, "amd64", &m, |names| {
+            // Only groups with a real choice are asked about.
+            assert_eq!(names, ["xdg-desktop-portal-gtk", "xdg-desktop-portal-kde"]);
+            HashSet::from(["xdg-desktop-portal-kde".to_string()])
+        })
+        .unwrap();
+        assert_eq!(d.depends, ["xdg-desktop-portal-kde", "solo"]);
+        assert_eq!(d.notes, ["Depends: picked xdg-desktop-portal-kde from 'portal-gtk | portal-kde' because it is installed"]);
+
+        let d = translate(&control, "amd64", &m, |_| HashSet::new()).unwrap();
+        assert_eq!(d.depends, ["xdg-desktop-portal-gtk", "solo"]);
     }
 
     #[test]
@@ -230,7 +296,7 @@ mod tests {
     #[test]
     fn bad_relation_is_an_error() {
         let control = Control::parse("Package: a\nVersion: 1\nArchitecture: amd64\nDepends: foo (>= 1\n").unwrap();
-        let err = translate(&control, "amd64", &map(&[])).unwrap_err().to_string();
+        let err = translate(&control, "amd64", &map(&[]), |_| HashSet::new()).unwrap_err().to_string();
         assert!(err.starts_with("Depends: "), "{err}");
     }
 }

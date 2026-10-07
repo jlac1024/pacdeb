@@ -33,7 +33,7 @@ pub fn check(
             elsewhere.push(node.path.clone());
             continue;
         }
-        let Some(bytes) = node.source.as_ref().and_then(|s| contents.get(s)) else {
+        let Some(bytes) = node.deb_path().and_then(|s| contents.get(s)) else {
             continue;
         };
         let text = String::from_utf8_lossy(bytes);
@@ -174,10 +174,10 @@ fn has_icon(paths: &HashSet<&str>, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::NodeKind;
+    use crate::model::{NodeKind, Source};
 
     fn node(path: &str) -> Node {
-        Node { path: path.into(), kind: NodeKind::File, mode: 0o644, size: 0, source: Some(path.into()) }
+        Node { path: path.into(), kind: NodeKind::File, mode: 0o644, size: 0, source: Source::Deb(path.into()) }
     }
 
     fn run(files: &[(&str, &str)], extra: &[&str]) -> (Vec<DesktopCheck>, Vec<String>) {

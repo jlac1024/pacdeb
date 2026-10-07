@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::pathutil::{basename, is_under, parent, relative, replace_prefix, resolve};
 use crate::deb::{DataEntry, EntryKind};
-use crate::model::{Node, NodeKind};
+use crate::model::{Node, NodeKind, Source};
 
 /// Arch's filesystem package makes these symlinks into /usr, so packages must not ship them.
 const MERGED_USR: [(&str, &str); 6] = [
@@ -180,7 +180,7 @@ pub fn apply(entries: &[DataEntry], arch: &str, contents: &HashMap<String, Vec<u
             path: dest,
             mode: e.mode,
             size: e.size,
-            source: Some(e.path.clone()),
+            source: Source::Deb(e.path.clone()),
         });
     }
     for (root, n) in moved_from {
@@ -207,7 +207,7 @@ fn is_apt_cron(e: &DataEntry, contents: &HashMap<String, Vec<u8>>) -> bool {
 }
 
 pub fn mentions_apt(text: &str) -> bool {
-    ["/etc/apt", "apt-key", "sources.list", "apt-get", "apt.conf", "trusted.gpg"]
+    ["/etc/apt", "apt-key", "sources.list", "apt-get", "apt.conf", "trusted.gpg", "/usr/share/keyrings"]
         .iter()
         .any(|p| text.contains(p))
 }
@@ -216,7 +216,7 @@ pub fn mentions_apt(text: &str) -> bool {
 /// relative, absolute ones stay absolute.
 fn fix_links(out: &mut FsResult) {
     for node in &mut out.nodes {
-        let old_path = node.source.clone().unwrap_or_else(|| node.path.clone());
+        let old_path = node.deb_path().unwrap_or(&node.path).to_string();
         match &mut node.kind {
             NodeKind::Symlink(target) => {
                 let old_abs = resolve(parent(&old_path), target);
@@ -460,7 +460,7 @@ mod tests {
             ("/usr/bin/app", NodeKind::Symlink("x".into()), 0o777),
         ]
         .into_iter()
-        .map(|(path, kind, mode)| Node { path: path.into(), kind, mode, size: 0, source: None })
+        .map(|(path, kind, mode)| Node { path: path.into(), kind, mode, size: 0, source: Source::None })
         .collect();
         let changes = fix_modes(&mut nodes);
         let modes: Vec<u32> = nodes.iter().map(|n| n.mode).collect();

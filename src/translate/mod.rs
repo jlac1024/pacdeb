@@ -14,12 +14,12 @@ use std::path::Path;
 
 use crate::deb::{Deb, EntryKind, MAINTAINER_SCRIPTS};
 use crate::error::{Result, bail};
-use crate::model::{Node, NodeKind, Package};
+use crate::model::{Node, NodeKind, Package, Source};
 use crate::version::{ArchVersion, DebVersion};
 
 pub use deps::DepMap;
 pub use desktop::DesktopCheck;
-pub use scripts::{Action, Command as ScriptCommand, Outcome};
+pub use scripts::{Action, Command as ScriptCommand, Outcome, describe_action};
 pub use soname::{Closure, Lookup, SonameReport};
 
 /// Text files bigger than this are not read for checks; real desktop files and cron
@@ -35,6 +35,8 @@ pub trait System {
     fn dependency_closure(&self, roots: &[String]) -> Closure;
     /// Whether a program name or absolute path exists outside the package.
     fn exists(&self, program: &str) -> bool;
+    /// Which of these packages, or packages providing them, are installed.
+    fn installed(&self, names: &[String]) -> HashSet<String>;
 }
 
 /// Answers from pacman's databases and the real filesystem.
@@ -56,6 +58,10 @@ impl System for LiveSystem {
         std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
         })
+    }
+
+    fn installed(&self, names: &[String]) -> HashSet<String> {
+        deps::pacman_installed(names)
     }
 }
 
@@ -88,7 +94,7 @@ pub fn translate<R: Read + Seek>(
     let arch = map_arch(&deb_arch)?;
     let description = control.description().map(|(s, _)| s.to_string()).unwrap_or_default();
     let url = control.get("Homepage").map(String::from);
-    let deps = deps::translate(control, &deb_arch, depmap)?;
+    let deps = deps::translate(control, &deb_arch, depmap, |names| system.installed(names))?;
     let control_files = deb.control_files.clone();
 
     let mut entries = Vec::new();
@@ -121,9 +127,12 @@ pub fn translate<R: Read + Seek>(
     let fs::FsResult { mut nodes, map, mut changes, mut warnings } = fs::apply(&entries, arch, &contents);
 
     let mut script_cmds = Vec::new();
-    for script in MAINTAINER_SCRIPTS {
-        if let Some(body) = control_files.get(script) {
-            script_cmds.extend(scripts::analyze(script, &String::from_utf8_lossy(body)));
+    {
+        let exists = package_facts(&nodes, &map, &name);
+        for script in MAINTAINER_SCRIPTS {
+            if let Some(body) = control_files.get(script) {
+                script_cmds.extend(scripts::analyze(script, &String::from_utf8_lossy(body), &exists));
+            }
         }
     }
     apply_actions(&mut nodes, &map, &script_cmds, &mut changes, &mut warnings);
@@ -216,6 +225,29 @@ fn check_pkgname(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Answers path tests in scripts from the package: paths it ships exist, and paths
+/// inside the app's own directories that it does not ship do not. Everything else
+/// depends on the system.
+fn package_facts<'a>(nodes: &'a [Node], map: &'a fs::PathMap, name: &str) -> impl Fn(&str) -> Option<bool> + 'a {
+    let paths: HashSet<&str> = nodes.iter().map(|n| n.path.as_str()).collect();
+    let own = [format!("/usr/lib/{name}"), format!("/usr/share/{name}")];
+    let private: Vec<String> = nodes
+        .iter()
+        .filter(|n| n.is_dir() && (own.contains(&n.path) || pathutil::parent(&n.path) == "/opt"))
+        .map(|n| n.path.clone())
+        .collect();
+    move |p: &str| {
+        let p = map.apply(p);
+        if paths.contains(p.as_str()) {
+            Some(true)
+        } else if private.iter().any(|dir| pathutil::is_under(&p, dir)) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 fn apply_actions(
     nodes: &mut Vec<Node>,
     map: &fs::PathMap,
@@ -223,6 +255,7 @@ fn apply_actions(
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
+    let mut removals = Vec::new();
     for c in cmds {
         let Outcome::Actions(actions) = &c.outcome else {
             continue;
@@ -238,7 +271,7 @@ fn apply_actions(
                         Some(_) => warnings.push(format!("{at}: {link} is already in the package, symlink to {target} skipped")),
                         None => {
                             changes.push(format!("added symlink {link} -> {target} ({at})"));
-                            nodes.push(Node { path: link, kind: NodeKind::Symlink(target), mode: 0o777, size: 0, source: None });
+                            nodes.push(Node { path: link, kind: NodeKind::Symlink(target), mode: 0o777, size: 0, source: Source::None });
                         }
                     }
                 }
@@ -253,13 +286,49 @@ fn apply_actions(
                         None => warnings.push(format!("{at}: chmod on {path}, which is not in the package")),
                     }
                 }
-                Action::RemoveOwned { path } => {
+                Action::Copy { from, to } => {
+                    let (from, to) = (map.apply(from), map.apply(to));
+                    let Some(src) = nodes.iter().find(|n| n.path == from && n.kind == NodeKind::File).cloned() else {
+                        warnings.push(format!("{at}: copies {from}, which is not a file in the package"));
+                        continue;
+                    };
+                    if nodes.iter().any(|n| n.path == to) {
+                        warnings.push(format!("{at}: {to} is already in the package, copy of {from} skipped"));
+                        continue;
+                    }
+                    changes.push(format!("added {to}, a copy of {from} ({at})"));
+                    nodes.push(Node { path: to, ..src });
+                }
+                Action::Write { path, content } => {
+                    let path = map.apply(path);
+                    if nodes.iter().any(|n| n.path == path) {
+                        warnings.push(format!("{at}: {path} is already in the package, the script's version skipped"));
+                        continue;
+                    }
+                    changes.push(format!("added {path} with the content the script writes ({at})"));
+                    nodes.push(Node {
+                        path,
+                        kind: NodeKind::File,
+                        mode: 0o644,
+                        size: content.len() as u64,
+                        source: Source::Inline(content.clone()),
+                    });
+                }
+                Action::Mkdir { path } => {
                     let path = map.apply(path);
                     if !nodes.iter().any(|n| n.path == path) {
-                        warnings.push(format!("{at}: removes {path}, which is not in the package; check by hand"));
+                        nodes.push(Node { path, kind: NodeKind::Dir, mode: 0o755, size: 0, source: Source::None });
                     }
                 }
+                // Checked once everything else is in place: scripts often remove a file
+                // right before writing it.
+                Action::Remove { path } => removals.push((at.clone(), map.apply(path))),
             }
+        }
+    }
+    for (at, path) in removals {
+        if !nodes.iter().any(|n| n.path == path) {
+            warnings.push(format!("{at}: removes {path}, which is not in the package; check by hand"));
         }
     }
 }
@@ -275,7 +344,7 @@ fn ensure_parents(nodes: &mut Vec<Node>) {
             dir = pathutil::parent(dir);
         }
     }
-    nodes.extend(missing.into_iter().map(|path| Node { path, kind: NodeKind::Dir, mode: 0o755, size: 0, source: None }));
+    nodes.extend(missing.into_iter().map(|path| Node { path, kind: NodeKind::Dir, mode: 0o755, size: 0, source: Source::None }));
 }
 
 #[cfg(test)]
@@ -342,6 +411,9 @@ weird-tool --setup
         fn exists(&self, _: &str) -> bool {
             false
         }
+        fn installed(&self, _: &[String]) -> HashSet<String> {
+            HashSet::new()
+        }
     }
 
     /// Has no file database.
@@ -356,6 +428,9 @@ weird-tool --setup
         }
         fn exists(&self, _: &str) -> bool {
             false
+        }
+        fn installed(&self, _: &[String]) -> HashSet<String> {
+            HashSet::new()
         }
     }
 

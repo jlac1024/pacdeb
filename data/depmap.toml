@@ -79,6 +79,11 @@
 "libexpat1" = "expat"
 "xdg-utils" = "xdg-utils"
 "xdg-desktop-portal" = "xdg-desktop-portal"
+"xdg-desktop-portal-gtk" = "xdg-desktop-portal-gtk"
+"xdg-desktop-portal-gnome" = "xdg-desktop-portal-gnome"
+"xdg-desktop-portal-kde" = "xdg-desktop-portal-kde"
+"plasma-workspace" = "plasma-workspace"
+"gvfs" = "gvfs"
 "desktop-file-utils" = "desktop-file-utils"
 "hicolor-icon-theme" = "hicolor-icon-theme"
 "shared-mime-info" = "shared-mime-info"
@@ -117,6 +122,8 @@
 "libasound2t64" = "alsa-lib"
 "libpulse0" = "libpulse"
 "pulseaudio" = "libpulse"
+"libpipewire-0.3-0" = "libpipewire"
+"libpipewire-0.3-0t64" = "libpipewire"
 
 # Virtualization (apps that run their own virtual machine)
 "qemu-system-x86" = "qemu-system-x86"
@@ -130,3 +137,5 @@
 "python3" = "python"
 "unzip" = "unzip"
 "lsb-release" = "lsb-release"
+"bubblewrap" = "bubblewrap"
+"socat" = "socat"

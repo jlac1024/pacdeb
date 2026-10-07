@@ -11,6 +11,17 @@ pub enum NodeKind {
     Hardlink(String),
 }
 
+/// Where a node's content comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// An entry in the deb's data archive, by its path there.
+    Deb(String),
+    /// Bytes a maintainer script would have written, such as a heredoc.
+    Inline(Vec<u8>),
+    /// Nothing to copy: directories and symlinks Ferry adds itself.
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     /// Final absolute path in the package.
@@ -18,14 +29,19 @@ pub struct Node {
     pub kind: NodeKind,
     pub mode: u32,
     pub size: u64,
-    /// Path of the entry in the deb's data archive. None for nodes Ferry adds itself,
-    /// such as symlinks from update-alternatives or missing parent directories.
-    pub source: Option<String>,
+    pub source: Source,
 }
 
 impl Node {
     pub fn is_dir(&self) -> bool {
         self.kind == NodeKind::Dir
+    }
+
+    pub fn deb_path(&self) -> Option<&str> {
+        match &self.source {
+            Source::Deb(p) => Some(p),
+            _ => None,
+        }
     }
 }
 

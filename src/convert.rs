@@ -148,15 +148,15 @@ fn describe(o: &Outcome) -> String {
         Outcome::Actions(actions) => actions
             .iter()
             .map(|a| match a {
-                Action::Symlink { link, target } => format!("symlink {link} -> {target} in the package"),
-                Action::Chmod { path, mode } => format!("mode {mode:04o} on {path} in the package"),
-                Action::RemoveOwned { path } => format!("nothing, pacman removes {path} with the package"),
+                Action::Remove { path } => format!("nothing, pacman removes {path} with the package"),
+                a => format!("{} in the package", translate::describe_action(a)),
             })
             .collect::<Vec<_>>()
             .join("; "),
         Outcome::Hook(what) => format!("nothing, a pacman hook updates the {what}"),
         Outcome::Handled(why) => format!("nothing, {why}"),
         Outcome::AptRepo => "dropped, apt repository setup".to_string(),
+        Outcome::Skipped(why) => format!("nothing, it {why}"),
         Outcome::Unknown(why) => format!("NOT TRANSLATED: {why}"),
     }
 }
