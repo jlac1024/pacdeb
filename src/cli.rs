@@ -2,62 +2,38 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::error::Result;
-
-const USAGE: &str = "\
-pacdeb: turn Debian .deb packages into pacman packages and keep them updated
-
-Usage: pacdeb <command> [options]
-
-Commands:
-  inspect <file.deb>                 Show control fields, files, scripts and dep mapping
-  convert <file.deb> [--direct] [--out <dir>] [--dry-run]
-                                     Build a pacman package without installing it;
-                                     --dry-run prints what would be built
-  install <file.deb|name> [--direct] Convert and install with sudo pacman -U
-  add <name> [--preset <p> | --source <direct|apt|github|manual>] [options]
-                                     Track an app for updates (known apps have presets)
-  set <name> [options]               Change a tracked app, for example its --channel
-  set --channel <name>               Set the global channel ('' clears it)
-  list                               Show tracked apps and their versions
-  check [name]                       Report available updates, download nothing
-  update [name] [--file <file.deb>] [--direct] [--no-install]
-                                     Fetch, convert and install anything newer
-  remove <name>                      Stop tracking an app (does not uninstall)
-
-Options for add and set:
-  --channel <c>  --pkgname <n>  --provides a,b  --conflicts a,b
-  --depends a,b (extra)  --no-depends a,b (dropped)
-  direct: --url <u> (may use {version})  --feed <u>  --version-json <path>
-          --version-pattern <app_{version}.deb>  --version-regex <regex>
-          --url-json <path>  --checksum-json <path>
-  apt:    --repo <u>  --suite <s>  --component <c>  --package <p>  --arch <a>
-          --key-url <u> [--key-fingerprint <fpr>] or --key <file> (presets fetch theirs)
-  github: --repo <owner/name>  --asset <pattern>  --prerelease
-  Values may use {channel}.
-
-Options:
-  -h, --help                         Show this help
-  -V, --version                      Show the version
-
-Environment:
-  PACDEB_HOME          Put config, state and cache under one directory
-  PACDEB_INSTALL_CMD   Command used instead of sudo pacman -U
-  PACDEB_GITHUB_TOKEN  Token for GitHub API requests
-";
-
-
+use crate::help;
 
 pub fn run(args: &[String]) -> ExitCode {
     let Some(first) = args.first() else {
-        print!("{USAGE}");
+        print!("{}", help::OVERVIEW);
         return ExitCode::SUCCESS;
     };
+    // 'pacdeb <command> --help' anywhere in the arguments shows that command's page.
+    if let Some(page) = help::page(first).filter(|_| args[1..].iter().any(|a| a == "-h" || a == "--help")) {
+        print!("{page}");
+        return ExitCode::SUCCESS;
+    }
 
     match first.as_str() {
-        "-h" | "--help" | "help" => {
-            print!("{USAGE}");
+        "-h" | "--help" => {
+            print!("{}", help::OVERVIEW);
             ExitCode::SUCCESS
         }
+        "help" => match &args[1..] {
+            [] => {
+                print!("{}", help::OVERVIEW);
+                ExitCode::SUCCESS
+            }
+            [cmd] => match help::page(cmd) {
+                Some(page) => {
+                    print!("{page}");
+                    ExitCode::SUCCESS
+                }
+                None => usage_error("", &format!("no command named '{cmd}'")),
+            },
+            _ => usage_error("", "usage: pacdeb help [command]"),
+        },
         "-V" | "--version" => {
             println!("pacdeb {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -66,41 +42,38 @@ pub fn run(args: &[String]) -> ExitCode {
         "convert" => convert(&args[1..]),
         "install" => install(&args[1..]),
         "update" => update(&args[1..]),
-        "add" => registry_cmd(&args[1..], "usage: pacdeb add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
+        "add" => registry_cmd("add", &args[1..], "usage: pacdeb add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
             [name] => crate::apps::add(name, f),
             _ => Err(crate::error::Error::new("usage: pacdeb add <name> [--preset <p> | --source <type>] [options]")),
         }),
-        "set" => registry_cmd(&args[1..], "usage: pacdeb set <name> [options], or pacdeb set --channel <name>", |pos, f| match pos {
+        "set" => registry_cmd("set", &args[1..], "usage: pacdeb set <name> [options], or pacdeb set --channel <name>", |pos, f| match pos {
             [] => crate::apps::set(None, f),
             [name] => crate::apps::set(Some(name), f),
             _ => Err(crate::error::Error::new("usage: pacdeb set <name> [options], or pacdeb set --channel <name>")),
         }),
         "list" => match &args[1..] {
             [] => finish(crate::apps::list()),
-            _ => usage_error("usage: pacdeb list"),
+            _ => usage_error("list", "usage: pacdeb list"),
         },
         "remove" => match &args[1..] {
             [name] if !name.starts_with('-') => finish(crate::apps::remove(name)),
-            _ => usage_error("usage: pacdeb remove <name>"),
+            _ => usage_error("remove", "usage: pacdeb remove <app>"),
         },
         "check" => match &args[1..] {
             [] => finish(crate::apps::check(None)),
             [name] if !name.starts_with('-') => finish(crate::apps::check(Some(name))),
-            _ => usage_error("usage: pacdeb check [name]"),
+            _ => usage_error("check", "usage: pacdeb check [app]"),
         },
-        other => {
-            eprintln!("pacdeb: unknown command '{other}'. Run 'pacdeb --help' for the list.");
-            ExitCode::from(2)
-        }
+        other => usage_error("", &format!("unknown command '{other}'")),
     }
 }
 
 fn inspect(args: &[String]) -> ExitCode {
     let [path] = args else {
-        return usage_error("usage: pacdeb inspect <file.deb>");
+        return usage_error("inspect", "usage: pacdeb inspect <file.deb>");
     };
     if path.starts_with('-') {
-        return usage_error(&format!("unknown option '{path}'. Usage: pacdeb inspect <file.deb>"));
+        return usage_error("inspect", &format!("unknown option '{path}'. Usage: pacdeb inspect <file.deb>"));
     }
     finish(crate::inspect::run(Path::new(path)))
 }
@@ -117,15 +90,15 @@ fn convert(args: &[String]) -> ExitCode {
             "--direct" => opts.1 = true,
             "--out" => match iter.next() {
                 Some(dir) => opts.2 = Some(PathBuf::from(dir)),
-                None => return usage_error(&format!("--out needs a directory. {CONVERT_USAGE}")),
+                None => return usage_error("convert", &format!("--out needs a directory. {CONVERT_USAGE}")),
             },
-            s if s.starts_with('-') => return usage_error(&format!("unknown option '{s}'. {CONVERT_USAGE}")),
+            s if s.starts_with('-') => return usage_error("convert", &format!("unknown option '{s}'. {CONVERT_USAGE}")),
             s if deb.is_none() => deb = Some(PathBuf::from(s)),
-            s => return usage_error(&format!("unexpected argument '{s}'. {CONVERT_USAGE}")),
+            s => return usage_error("convert", &format!("unexpected argument '{s}'. {CONVERT_USAGE}")),
         }
     }
     let Some(deb) = deb else {
-        return usage_error(CONVERT_USAGE);
+        return usage_error("convert", CONVERT_USAGE);
     };
     let (dry_run, direct, out) = opts;
     finish(crate::convert::run(&crate::convert::Options { deb, dry_run, direct, out }))
@@ -139,13 +112,13 @@ fn install(args: &[String]) -> ExitCode {
     for a in args {
         match a.as_str() {
             "--direct" => direct = true,
-            s if s.starts_with('-') => return usage_error(&format!("unknown option '{s}'. {INSTALL_USAGE}")),
+            s if s.starts_with('-') => return usage_error("install", &format!("unknown option '{s}'. {INSTALL_USAGE}")),
             s if target.is_none() => target = Some(PathBuf::from(s)),
-            s => return usage_error(&format!("unexpected argument '{s}'. {INSTALL_USAGE}")),
+            s => return usage_error("install", &format!("unexpected argument '{s}'. {INSTALL_USAGE}")),
         }
     }
     let Some(target) = target else {
-        return usage_error(INSTALL_USAGE);
+        return usage_error("install", INSTALL_USAGE);
     };
     // A path to a file is a deb; anything else is a tracked app's name.
     if target.exists() || target.extension().is_some_and(|e| e == "deb") {
@@ -166,26 +139,30 @@ fn update(args: &[String]) -> ExitCode {
             "--no-install" => opts.no_install = true,
             "--file" => match it.next() {
                 Some(f) => opts.file = Some(PathBuf::from(f)),
-                None => return usage_error(&format!("--file needs a .deb. {UPDATE_USAGE}")),
+                None => return usage_error("update", &format!("--file needs a .deb. {UPDATE_USAGE}")),
             },
-            s if s.starts_with('-') => return usage_error(&format!("unknown option '{s}'. {UPDATE_USAGE}")),
+            s if s.starts_with('-') => return usage_error("update", &format!("unknown option '{s}'. {UPDATE_USAGE}")),
             s if opts.name.is_none() => opts.name = Some(s.to_string()),
-            s => return usage_error(&format!("unexpected argument '{s}'. {UPDATE_USAGE}")),
+            s => return usage_error("update", &format!("unexpected argument '{s}'. {UPDATE_USAGE}")),
         }
     }
     finish(crate::update::update(&opts))
 }
 
 /// Parses add/set style arguments and runs the command with them.
-fn registry_cmd(args: &[String], usage: &str, run: impl FnOnce(&[String], &crate::apps::Flags) -> Result<()>) -> ExitCode {
+fn registry_cmd(cmd: &str, args: &[String], usage: &str, run: impl FnOnce(&[String], &crate::apps::Flags) -> Result<()>) -> ExitCode {
     match crate::apps::parse_flags(args) {
         Ok((pos, flags)) => finish(run(&pos, &flags)),
-        Err(e) => usage_error(&format!("{e}. {usage}")),
+        Err(e) => usage_error(cmd, &format!("{e}. {usage}")),
     }
 }
 
-fn usage_error(msg: &str) -> ExitCode {
-    eprintln!("pacdeb: {msg}");
+/// Reports a mistake in the command line and where to read about it. An empty
+/// `cmd` points at the overview.
+fn usage_error(cmd: &str, msg: &str) -> ExitCode {
+    let st = crate::style::Style::for_stderr();
+    let more = if cmd.is_empty() { "pacdeb --help".to_string() } else { format!("pacdeb {cmd} --help") };
+    eprintln!("{} {msg}\nRun '{more}' for details.", st.bad("pacdeb:"));
     ExitCode::from(2)
 }
 
