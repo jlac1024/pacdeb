@@ -33,11 +33,39 @@ pub fn triplet_dir(arch: &str) -> Option<&'static str> {
     }
 }
 
+/// Debian's Python module folder: /usr/lib/python3/dist-packages, or a versioned
+/// /usr/lib/python3.N/dist-packages. Returns that prefix of `path`.
+fn dist_packages(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/usr/lib/python3")?;
+    let version_len = rest.strip_prefix('.').map_or(0, |r| 1 + r.chars().take_while(char::is_ascii_digit).count());
+    let after = &rest[version_len..];
+    let tail = after.strip_prefix("/dist-packages")?;
+    (tail.is_empty() || tail.starts_with('/')).then(|| &path[..path.len() - tail.len()])
+}
+
+/// Moves Debian's dist-packages to Arch's /usr/lib/pythonX.Y/site-packages for the
+/// installed Python. None when the path is not Python modules or the version is unknown.
+fn python_path(path: &str, python: Option<&str>) -> Option<String> {
+    let prefix = dist_packages(path)?;
+    let version = python?;
+    Some(format!("/usr/lib/python{version}/site-packages{}", &path[prefix.len()..]))
+}
+
+/// The moves every package must get: merged /usr, then Python modules.
+fn required_path(path: &str, python: Option<&str>) -> String {
+    let merged = MERGED_USR
+        .iter()
+        .find_map(|(from, to)| replace_prefix(path, from, to))
+        .unwrap_or_else(|| path.to_string());
+    python_path(&merged, python).unwrap_or(merged)
+}
+
 /// Old path to new path for everything the fixes moved.
 #[derive(Debug, Default)]
 pub struct PathMap {
     moved: BTreeMap<String, String>,
     triplet: Option<&'static str>,
+    python: Option<String>,
 }
 
 impl PathMap {
@@ -54,16 +82,13 @@ impl PathMap {
                 return format!("{new}{}", &path[dir.len()..]);
             }
         }
-        system_path(path, self.triplet)
+        system_path(path, self.triplet, self.python.as_deref())
     }
 }
 
-/// The merged-usr and multiarch rewrite on its own.
-fn system_path(path: &str, triplet: Option<&str>) -> String {
-    let merged = MERGED_USR
-        .iter()
-        .find_map(|(from, to)| replace_prefix(path, from, to))
-        .unwrap_or_else(|| path.to_string());
+/// The general rewrite rules on their own: required moves, then the multiarch one.
+fn system_path(path: &str, triplet: Option<&str>, python: Option<&str>) -> String {
+    let merged = required_path(path, python);
     triplet
         .and_then(|t| replace_prefix(&merged, t, "/usr/lib"))
         .unwrap_or(merged)
@@ -78,13 +103,22 @@ pub struct FsResult {
 }
 
 /// `contents` holds the bytes of small files the fixes need to look at (cron jobs),
-/// keyed by their path in the deb.
-pub fn apply(entries: &[DataEntry], arch: &str, contents: &HashMap<String, Vec<u8>>) -> FsResult {
+/// keyed by their path in the deb. `python` is the installed Python's "X.Y", used to
+/// place Python modules.
+pub fn apply(entries: &[DataEntry], arch: &str, contents: &HashMap<String, Vec<u8>>, python: Option<&str>) -> FsResult {
     let triplet = triplet_dir(arch);
     let mut out = FsResult {
-        map: PathMap { moved: BTreeMap::new(), triplet },
+        map: PathMap { moved: BTreeMap::new(), triplet, python: python.map(String::from) },
         ..FsResult::default()
     };
+    if python.is_none() {
+        if let Some(e) = entries.iter().find(|e| dist_packages(&e.path).is_some()) {
+            out.warnings.push(format!(
+                "{} holds Python modules, but the installed Python version is unknown, so they stay in Debian's dist-packages where Arch's Python does not look",
+                e.path
+            ));
+        }
+    }
 
     let mut removed = Vec::new();
     let mut kept: Vec<&DataEntry> = Vec::new();
@@ -110,10 +144,7 @@ pub fn apply(entries: &[DataEntry], arch: &str, contents: &HashMap<String, Vec<u
     let targets: Vec<(String, String)> = kept
         .iter()
         .map(|e| {
-            let merged = MERGED_USR
-                .iter()
-                .find_map(|(from, to)| replace_prefix(&e.path, from, to))
-                .unwrap_or_else(|| e.path.clone());
+            let merged = required_path(&e.path, python);
             let full = triplet
                 .and_then(|t| replace_prefix(&merged, t, "/usr/lib"))
                 .unwrap_or_else(|| merged.clone());
@@ -162,8 +193,9 @@ pub fn apply(entries: &[DataEntry], arch: &str, contents: &HashMap<String, Vec<u
                 let root = MERGED_USR
                     .iter()
                     .map(|(from, _)| *from)
-                    .chain(triplet)
                     .find(|from| is_under(&e.path, from))
+                    .or_else(|| dist_packages(&e.path))
+                    .or(triplet.filter(|t| is_under(&e.path, t)))
                     .unwrap_or("/");
                 *moved_from.entry(root).or_default() += 1;
                 out.map.moved.insert(e.path.clone(), dest.clone());
@@ -184,7 +216,7 @@ pub fn apply(entries: &[DataEntry], arch: &str, contents: &HashMap<String, Vec<u
         });
     }
     for (root, n) in moved_from {
-        let to = system_path(root, triplet);
+        let to = system_path(root, triplet, python);
         out.changes.push(format!("moved {n} {} from {root} into {to}", if n == 1 { "entry" } else { "entries" }));
     }
 
@@ -318,7 +350,7 @@ mod tests {
             dir("/usr/bin"),
             file("/usr/bin/app"),
         ];
-        let r = apply(&entries, "x86_64", &HashMap::new());
+        let r = apply(&entries, "x86_64", &HashMap::new(), None);
         assert_eq!(
             paths(&r),
             [
@@ -353,7 +385,7 @@ mod tests {
             file("/usr/lib/x86_64-linux-gnu/libdup.so.1"),
             file("/lib/x86_64-linux-gnu/libbar.so.2"),
         ];
-        let r = apply(&entries, "x86_64", &HashMap::new());
+        let r = apply(&entries, "x86_64", &HashMap::new(), None);
         assert_eq!(
             paths(&r),
             [
@@ -370,13 +402,13 @@ mod tests {
         assert_eq!(r.map.apply("/usr/lib/x86_64-linux-gnu/libfoo.so.1"), "/usr/lib/libfoo.so.1");
 
         // No multiarch move for an arch-independent package.
-        let r = apply(&[file("/usr/lib/x86_64-linux-gnu/x")], "any", &HashMap::new());
+        let r = apply(&[file("/usr/lib/x86_64-linux-gnu/x")], "any", &HashMap::new(), None);
         assert_eq!(paths(&r), ["/usr/lib/x86_64-linux-gnu/x"]);
     }
 
     #[test]
     fn drops_merged_usr_collisions() {
-        let r = apply(&[file("/usr/bin/tool"), file("/bin/tool")], "x86_64", &HashMap::new());
+        let r = apply(&[file("/usr/bin/tool"), file("/bin/tool")], "x86_64", &HashMap::new(), None);
         assert_eq!(paths(&r), ["/usr/bin/tool"]);
         assert!(r.warnings[0].contains("/bin/tool: dropped"), "{:?}", r.warnings);
     }
@@ -400,7 +432,7 @@ mod tests {
             dir("/etc/default"),
             file("/etc/default/app"),
         ];
-        let r = apply(&entries, "x86_64", &contents);
+        let r = apply(&entries, "x86_64", &contents, None);
         assert_eq!(
             paths(&r),
             ["/etc", "/etc/cron.daily", "/etc/cron.weekly", "/etc/cron.weekly/app", "/etc/cron.daily/cleanup", "/etc/default", "/etc/default/app"]
@@ -413,7 +445,7 @@ mod tests {
     fn prunes_dirs_left_empty() {
         let contents = HashMap::from([("/etc/cron.daily/app".to_string(), b"apt-get update".to_vec())]);
         let entries = [dir("/etc"), dir("/etc/cron.daily"), file("/etc/cron.daily/app"), dir("/etc/apt"), file("/etc/apt/x")];
-        let r = apply(&entries, "x86_64", &contents);
+        let r = apply(&entries, "x86_64", &contents, None);
         assert!(r.nodes.is_empty(), "{:?}", paths(&r));
     }
 
@@ -428,7 +460,7 @@ mod tests {
             link("/usr/bin/app", "../lib/app/app"),
             link("/sbin/tool", "../usr/lib/app/tool"),
         ];
-        let r = apply(&entries, "x86_64", &HashMap::new());
+        let r = apply(&entries, "x86_64", &HashMap::new(), None);
         let links: Vec<_> = r
             .nodes
             .iter()
@@ -470,10 +502,48 @@ mod tests {
     }
 
     #[test]
+    fn moves_python_modules_to_site_packages() {
+        let cases = [
+            ("/usr/lib/python3/dist-packages", Some("/usr/lib/python3/dist-packages")),
+            ("/usr/lib/python3/dist-packages/foo/__init__.py", Some("/usr/lib/python3/dist-packages")),
+            ("/usr/lib/python3.12/dist-packages/foo.py", Some("/usr/lib/python3.12/dist-packages")),
+            ("/usr/lib/python3/dist-packagesx/foo.py", None),
+            ("/usr/lib/python3.12/site-packages/foo.py", None),
+        ];
+        for (path, want) in cases {
+            assert_eq!(dist_packages(path), want, "{path}");
+        }
+
+        let entries = [
+            file("/usr/lib/python3/dist-packages/demo/__init__.py"),
+            link("/usr/bin/demo-tool", "../lib/python3/dist-packages/demo/cli.py"),
+            file("/usr/lib/python3/dist-packages/demo/cli.py"),
+        ];
+        let r = apply(&entries, "x86_64", &HashMap::new(), Some("3.14"));
+        let got: Vec<(String, Option<String>)> = r
+            .nodes
+            .iter()
+            .map(|n| (n.path.clone(), if let NodeKind::Symlink(t) = &n.kind { Some(t.clone()) } else { None }))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("/usr/lib/python3.14/site-packages/demo/__init__.py".to_string(), None),
+                ("/usr/bin/demo-tool".to_string(), Some("../lib/python3.14/site-packages/demo/cli.py".to_string())),
+                ("/usr/lib/python3.14/site-packages/demo/cli.py".to_string(), None),
+            ]
+        );
+        assert!(r.changes.iter().any(|c| c == "moved 2 entries from /usr/lib/python3/dist-packages into /usr/lib/python3.14/site-packages"), "{:?}", r.changes);
+
+        let r = apply(&entries, "x86_64", &HashMap::new(), None);
+        assert!(r.warnings[0].contains("Python version is unknown"), "{:?}", r.warnings);
+    }
+
+    #[test]
     fn notes_non_root_owners() {
         let mut e = file("/usr/bin/x");
         e.uid = 1000;
-        let r = apply(&[e], "x86_64", &HashMap::new());
+        let r = apply(&[e], "x86_64", &HashMap::new(), None);
         assert!(r.changes.iter().any(|c| c.contains("owned by root")), "{:?}", r.changes);
     }
 }

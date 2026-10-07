@@ -130,6 +130,27 @@
 "ovmf" = "edk2-ovmf"
 "virtiofsd" = "virtiofsd"
 
+# Python modules
+"python3-dbus" = "python-dbus"
+"python3-packaging" = "python-packaging"
+"python3-psutil" = "python-psutil"
+"python3-xdg" = "python-pyxdg"
+
+# X servers, sessions and auth (Chrome Remote Desktop)
+"xvfb" = "xorg-server-xvfb"
+"xserver-xorg-video-dummy" = "xf86-video-dummy"
+"xauth" = "xorg-xauth"
+"pkexec" = "polkit"
+"policykit-1" = "polkit"
+"libpam0g" = "pam"
+"gsettings-desktop-schemas" = "gsettings-desktop-schemas"
+"pipewire" = "pipewire"
+"psmisc" = "psmisc"
+
+# Debian tools only the maintainer scripts use; nothing to install on Arch.
+"adduser" = ""
+"init-system-helpers" = ""
+
 # Base tools
 "bash" = "bash"
 "coreutils" = "coreutils"

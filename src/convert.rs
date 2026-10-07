@@ -205,6 +205,12 @@ pub fn report(t: &Translation, st: Style) -> String {
 
     section(&mut out, "Changes", &t.changes);
     section(&mut out, "Notes", &t.notes);
+    if !p.install_note.is_empty() {
+        writeln!(out, "\nInstall note (pacman shows this after installing):").unwrap();
+        for line in &p.install_note {
+            writeln!(out, "  | {line}").unwrap();
+        }
+    }
 
     if !t.desktop.is_empty() {
         writeln!(out, "\nLauncher entries:").unwrap();
@@ -278,6 +284,10 @@ fn describe(o: &Outcome) -> String {
             .collect::<Vec<_>>()
             .join("; "),
         Outcome::Hook(what) => format!("nothing, a pacman hook updates the {what}"),
+        Outcome::Service(steps) => {
+            let units: Vec<String> = steps.iter().map(|s| format!("{} {}", s.verb, s.unit)).collect();
+            format!("left to you ({}); the install note says how", units.join(", "))
+        }
         Outcome::Handled(why) => format!("nothing, {why}"),
         Outcome::AptRepo => "dropped, apt repository setup".to_string(),
         Outcome::Skipped(why) => format!("nothing, it {why}"),
@@ -327,10 +337,9 @@ mod tests {
             "    -> nothing, a pacman hook updates the MIME database\n",
             "  postinst line 4: frobnicate\n    -> NOT TRANSLATED: no translation for this command\n",
             "Libraries the binaries load:\n  no dynamically linked binaries found\n",
-            "\n3 warnings\n",
+            "\n2 warnings\n",
             "  Script lines Ferry could not translate (check them by hand):\n    postinst:4  frobnicate\n                no translation for this command\n",
             "  Dependencies with no Arch name, left out (map them in depmap.toml if needed):\n    libodd1  (Depends)\n",
-            "  Other:\n    no .desktop file in /usr/share/applications",
         ] {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }

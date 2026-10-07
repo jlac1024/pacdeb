@@ -31,6 +31,9 @@ pub fn with_makepkg<R: Read + Seek>(
     let tree = work.join(pkgbuild::TREE_DIR);
     tree::write(deb, pkg, &tree).context("writing the package files")?;
     fs::write(work.join("PKGBUILD"), pkgbuild::render(pkg, origin)).context("writing the PKGBUILD")?;
+    if let Some(script) = pkgbuild::install_script(pkg) {
+        fs::write(work.join(pkgbuild::install_file_name(pkg)), script).context("writing the .install file")?;
+    }
 
     let status = Command::new("makepkg")
         .args(["--force", "--nodeps", "--clean"])
@@ -64,7 +67,8 @@ pub fn direct<R: Read + Seek>(deb: &mut Deb<R>, pkg: &Package, work_root: &Path,
     fs::create_dir_all(out_dir).context(out_dir.display())?;
     let tree = work.join(pkgbuild::TREE_DIR);
     tree::write(deb, pkg, &tree).context("writing the package files")?;
-    let built = direct::pack(pkg, &tree, out_dir, build_time()).context("writing the package")?;
+    let install = pkgbuild::install_script(pkg);
+    let built = direct::pack(pkg, &tree, install.as_deref(), out_dir, build_time()).context("writing the package")?;
     remove_tree(&work)?;
     Ok(built)
 }

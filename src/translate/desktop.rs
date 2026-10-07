@@ -55,8 +55,12 @@ pub fn check(
             }
         }
 
+        // Hidden entries (URL and file handlers, autostart helpers) never show in the
+        // launcher on purpose, so only their Exec matters.
+        let hidden = entry.get("NoDisplay").copied() == Some("true") || entry.get("Hidden").copied() == Some("true");
         let icon = entry.get("Icon").map(|s| s.to_string());
         match &icon {
+            _ if hidden => {}
             None => problems.push("no Icon line".to_string()),
             Some(i) if i.starts_with('/') => {
                 if !paths.contains(i.as_str()) {
@@ -71,20 +75,19 @@ pub fn check(
                 }
             }
         }
-        if entry.get("NoDisplay").copied() == Some("true") || entry.get("Hidden").copied() == Some("true") {
-            problems.push("marked NoDisplay or Hidden, so the launcher will not list it".to_string());
-        }
-
         for p in &problems {
             warnings.push(format!("{}: {p}", node.path));
         }
         checks.push(DesktopCheck { path: node.path.clone(), exec: program, icon, problems });
     }
 
+    // Command line tools, libraries and services have no launcher entry and need none.
+    // Only an app that ships icons or a misplaced .desktop file looks like it wanted one.
+    let ships_icons = paths.iter().any(|p| p.starts_with("/usr/share/icons/") || p.starts_with("/usr/share/pixmaps/"));
     if checks.is_empty() {
-        if elsewhere.is_empty() {
+        if elsewhere.is_empty() && ships_icons {
             warnings.push(format!("no .desktop file in {APPLICATIONS}, so the app will not show up in the launcher"));
-        } else {
+        } else if !elsewhere.is_empty() {
             warnings.push(format!(
                 "no .desktop file in {APPLICATIONS}, only {}; the app will not show up in the launcher",
                 elsewhere.join(", ")
@@ -205,7 +208,7 @@ mod tests {
             ("Exec=\"/opt/My App/run\" %U\nIcon=app", &["/usr/share/icons/hicolor/256x256/apps/app.png"], "Exec program /opt/My App/run"),
             ("Exec=app\nIcon=nothere", &["/usr/bin/app"], "icon 'nothere' is not in the package"),
             ("Exec=app\nIcon=/opt/app.png", &["/usr/bin/app"], "icon /opt/app.png is not in the package"),
-            ("Exec=app\nIcon=app\nNoDisplay=true", &["/usr/bin/app", "/usr/share/pixmaps/app.svg"], "NoDisplay"),
+            ("Exec=missing\nNoDisplay=true", &[], "Exec program 'missing'"),
             ("Icon=app", &["/usr/share/pixmaps/app.png"], "no Exec line"),
         ];
         for (body, extra, want) in cases {
@@ -224,10 +227,20 @@ mod tests {
     }
 
     #[test]
-    fn warns_without_a_launcher_entry() {
+    fn hidden_entries_only_need_a_working_exec() {
+        let text = "[Desktop Entry]\nExec=/opt/App/open-url %u\nNoDisplay=true\nMimeType=x-scheme-handler/app;\n";
+        let (_, warnings) = run(&[("/usr/share/applications/handler.desktop", text)], &["/opt/App/open-url"]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn warns_without_a_launcher_entry_only_for_apps() {
         let (_, warnings) = run(&[("/opt/App/app.desktop", "[Desktop Entry]\nExec=x\n")], &[]);
         assert!(warnings[0].contains("only /opt/App/app.desktop"), "{warnings:?}");
-        let (_, warnings) = run(&[], &["/usr/bin/tool"]);
+        let (_, warnings) = run(&[], &["/usr/bin/app", "/usr/share/icons/hicolor/48x48/apps/app.png"]);
         assert!(warnings[0].contains("no .desktop file"), "{warnings:?}");
+        // A command line tool or service has nothing to put in the launcher.
+        let (_, warnings) = run(&[], &["/usr/bin/tool", "/usr/lib/systemd/system/tool.service"]);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }

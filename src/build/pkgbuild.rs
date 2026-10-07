@@ -26,9 +26,15 @@ pub fn render(pkg: &Package, origin: &str) -> String {
     writeln!(s, "license=({})", quote(&pkg.license)).unwrap();
     array(&mut s, "depends", pkg.depends.iter().cloned());
     array(&mut s, "optdepends", pkg.optdepends.iter().map(|(p, why)| format!("{p}: {why}")));
+    array(&mut s, "provides", pkg.provides.iter().cloned());
+    array(&mut s, "conflicts", pkg.conflicts.iter().cloned());
     array(&mut s, "backup", pkg.backup.iter().cloned());
-    // Electron binaries break when stripped, and there is nothing to build debug info for.
+    // Prebuilt binaries (Electron ones especially) can break when stripped, and there
+    // is nothing to build debug info for.
     writeln!(s, "options=('!strip' '!debug')").unwrap();
+    if !pkg.install_note.is_empty() {
+        writeln!(s, "install={}", quote(&install_file_name(pkg))).unwrap();
+    }
     s.push('\n');
     s.push_str("package() {\n");
     s.push_str("  # Ferry already laid out every file; copy the tree in unchanged. Running under\n");
@@ -40,6 +46,25 @@ pub fn render(pkg: &Package, origin: &str) -> String {
     }
     s.push_str("}\n");
     s
+}
+
+pub fn install_file_name(pkg: &Package) -> String {
+    format!("{}.install", pkg.name)
+}
+
+/// The .install scriptlet: it only prints the note after a fresh install. Ferry never
+/// puts commands from the deb's scripts in here.
+pub fn install_script(pkg: &Package) -> Option<String> {
+    if pkg.install_note.is_empty() {
+        return None;
+    }
+    let mut s = String::from("post_install() {\n  cat <<'FERRY_NOTE'\n");
+    for line in &pkg.install_note {
+        s.push_str(line);
+        s.push('\n');
+    }
+    s.push_str("FERRY_NOTE\n}\n");
+    Some(s)
 }
 
 fn array(s: &mut String, name: &str, items: impl Iterator<Item = String>) {
@@ -85,7 +110,10 @@ mod tests {
             license: "custom".into(),
             depends: vec!["gtk3".into(), "nss".into(), "alsa-lib".into(), "libsecret".into()],
             optdepends: vec![("libpulse".into(), "recommended by the deb".into())],
+            provides: vec!["demo-app".into()],
+            conflicts: vec!["demo-bin".into()],
             backup: vec!["etc/default/demo".into()],
+            install_note: vec![],
             nodes: vec![
                 Node { path: "/opt/Demo/chrome-sandbox".into(), kind: NodeKind::File, mode: 0o4755, size: 1, source: Source::None },
                 Node { path: "/opt/Demo/demo".into(), kind: NodeKind::File, mode: 0o755, size: 1, source: Source::None },
@@ -113,6 +141,8 @@ depends=(
   'libsecret'
 )
 optdepends=('libpulse: recommended by the deb')
+provides=('demo-app')
+conflicts=('demo-bin')
 backup=('etc/default/demo')
 options=('!strip' '!debug')
 
@@ -132,10 +162,24 @@ package() {
         p.version = ArchVersion { epoch: 0, pkgver: "1.0".into(), pkgrel: 1 };
         p.url = None;
         p.optdepends.clear();
+        p.provides.clear();
+        p.conflicts.clear();
         p.backup.clear();
         let got = render(&p, "x.deb");
-        for absent in ["epoch=", "url=", "optdepends=", "backup="] {
+        for absent in ["epoch=", "url=", "optdepends=", "provides=", "conflicts=", "backup=", "install="] {
             assert!(!got.contains(absent), "{absent} in:\n{got}");
         }
+        assert_eq!(install_script(&p), None);
+    }
+
+    #[test]
+    fn writes_an_install_note() {
+        let mut p = package();
+        p.install_note = vec!["To start it:".into(), "  sudo systemctl enable --now demo.service".into()];
+        assert!(render(&p, "x.deb").contains("install='demo.install'\n"));
+        assert_eq!(
+            install_script(&p).unwrap(),
+            "post_install() {\n  cat <<'FERRY_NOTE'\nTo start it:\n  sudo systemctl enable --now demo.service\nFERRY_NOTE\n}\n"
+        );
     }
 }
