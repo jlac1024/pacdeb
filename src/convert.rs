@@ -26,8 +26,7 @@ pub fn run(opts: &Options) -> Result<()> {
     let paths = Paths::from_env()?;
     let depmap = DepMap::load(&paths.config)?;
     let mut deb = Deb::open(&opts.deb)?;
-    let t = translate::translate(&mut deb, &depmap, 1, translate::pacman_lookup, translate::on_system)
-        .context(opts.deb.display())?;
+    let t = translate::translate(&mut deb, &depmap, 1, &translate::LiveSystem).context(opts.deb.display())?;
     let backend = if opts.direct { "direct (.pkg.tar.zst written by Ferry)" } else { "makepkg (PKGBUILD)" };
     let mut text = format!("Backend: {backend}\n");
     if let Some(out) = &opts.out {
@@ -130,15 +129,13 @@ fn libraries(out: &mut String, t: &Translation) {
     }
     writeln!(out, "  {} covered by depends or the base system", s.covered).unwrap();
     if !s.suggestions.is_empty() {
-        let lead = if t.unmapped.is_empty() {
-            "  not in depends, probably pulled in by them:".to_string()
-        } else {
-            format!("  not in depends; may stand in for unmapped {}:", t.unmapped.join(", "))
-        };
-        writeln!(out, "{lead}").unwrap();
-        let width = s.suggestions.iter().map(|(l, _)| l.len()).max().unwrap_or(0) + 2;
-        for (lib, owners) in &s.suggestions {
-            writeln!(out, "    {lib:<width$}{}", owners.join(" or ")).unwrap();
+        writeln!(out, "  not pulled in by depends; consider adding (in depmap.toml or per app):").unwrap();
+        let width = s.suggestions.iter().map(|(p, _)| p.len()).max().unwrap_or(0) + 2;
+        for (packages, libs) in &s.suggestions {
+            writeln!(out, "    {packages:<width$}for {}", libs.join(", ")).unwrap();
+        }
+        if !t.unmapped.is_empty() {
+            writeln!(out, "  the unmapped deps in the warnings below may be among these").unwrap();
         }
     }
     if !s.missing.is_empty() {
@@ -182,7 +179,7 @@ fn list_or_none(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::deb::testutil::{DebBuilder, TestEntry};
-    use crate::translate::Lookup;
+    use crate::translate::tests::BareSystem;
     use std::io::Cursor;
 
     #[test]
@@ -194,7 +191,7 @@ mod tests {
         .entry(TestEntry::file("./opt/Demo/demo", 0o755, b"x"))
         .build();
         let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
-        let t = translate::translate(&mut deb, &DepMap::builtin(), 1, |_| Lookup::NoDatabase, |_| false).unwrap();
+        let t = translate::translate(&mut deb, &DepMap::builtin(), 1, &BareSystem).unwrap();
         let text = report(&t);
         for want in [
             "Would build demo 1.0-1 for x86_64 (from deb version 1.0-1)",

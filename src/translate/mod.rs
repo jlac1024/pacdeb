@@ -20,11 +20,44 @@ use crate::version::{ArchVersion, DebVersion};
 pub use deps::DepMap;
 pub use desktop::DesktopCheck;
 pub use scripts::{Action, Command as ScriptCommand, Outcome};
-pub use soname::{Lookup, SonameReport, pacman_lookup};
+pub use soname::{Closure, Lookup, SonameReport};
 
 /// Text files bigger than this are not read for checks; real desktop files and cron
 /// jobs are a few KiB.
 const TEXT_LIMIT: u64 = 1 << 20;
+
+/// The read only questions translation asks about the running system. Tests answer
+/// them with fixed data.
+pub trait System {
+    /// Which packages ship each library in /usr/lib.
+    fn find_libraries(&self, sonames: &[String]) -> Lookup;
+    /// Every package and library the given packages pull in.
+    fn dependency_closure(&self, roots: &[String]) -> Closure;
+    /// Whether a program name or absolute path exists outside the package.
+    fn exists(&self, program: &str) -> bool;
+}
+
+/// Answers from pacman's databases and the real filesystem.
+pub struct LiveSystem;
+
+impl System for LiveSystem {
+    fn find_libraries(&self, sonames: &[String]) -> Lookup {
+        soname::pacman_lookup(sonames)
+    }
+
+    fn dependency_closure(&self, roots: &[String]) -> Closure {
+        soname::pacman_closure(roots)
+    }
+
+    fn exists(&self, program: &str) -> bool {
+        if program.contains('/') {
+            return Path::new(program).exists();
+        }
+        std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+        })
+    }
+}
 
 pub struct Translation {
     pub package: Package,
@@ -45,8 +78,7 @@ pub fn translate<R: Read + Seek>(
     deb: &mut Deb<R>,
     depmap: &DepMap,
     pkgrel: u32,
-    lookup: impl FnOnce(&[String]) -> Lookup,
-    on_system: impl Fn(&str) -> bool,
+    system: &impl System,
 ) -> Result<Translation> {
     let control = &deb.control;
     let name = control.require("Package")?.to_string();
@@ -118,7 +150,7 @@ pub fn translate<R: Read + Seek>(
         }
     }
 
-    let (desktop, desktop_warnings) = desktop::check(&nodes, &contents, &on_system);
+    let (desktop, desktop_warnings) = desktop::check(&nodes, &contents, |p| system.exists(p));
     warnings.extend(desktop_warnings);
 
     let bundled: BTreeSet<String> = nodes
@@ -126,7 +158,13 @@ pub fn translate<R: Read + Seek>(
         .filter(|n| !n.is_dir())
         .map(|n| pathutil::basename(&n.path).to_string())
         .collect();
-    let sonames = soname::report(&needed, &bundled, &deps.depends, lookup);
+    let sonames = soname::report(
+        &needed,
+        &bundled,
+        &deps.depends,
+        |libs| system.find_libraries(libs),
+        |roots| system.dependency_closure(roots),
+    );
     for lib in &sonames.missing {
         warnings.push(format!("{lib} is needed by a binary but no Arch package provides it in /usr/lib"));
     }
@@ -176,17 +214,6 @@ fn check_pkgname(name: &str) -> Result<()> {
         bail!("package name '{name}' is not a valid pacman package name");
     }
     Ok(())
-}
-
-/// Whether a program or path exists outside the package. Bare names are looked up
-/// on PATH the way `which` does.
-pub fn on_system(program: &str) -> bool {
-    if program.contains('/') {
-        return Path::new(program).exists();
-    }
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
-    })
 }
 
 fn apply_actions(
@@ -252,7 +279,7 @@ fn ensure_parents(nodes: &mut Vec<Node>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::deb::testutil::{DebBuilder, TestEntry};
     use std::collections::BTreeMap;
@@ -295,21 +322,47 @@ weird-tool --setup
         DepMap::builtin()
     }
 
-    fn lookup(wanted: &[String]) -> Lookup {
-        let mut wanted = wanted.to_vec();
-        wanted.sort();
-        assert_eq!(wanted, ["libc.so.6", "libgtk-3.so.0", "libmystery.so.1", "libnss3.so"]);
-        Lookup::Found(BTreeMap::from([
-            ("libnss3.so".into(), vec!["extra/nss".into()]),
-            ("libgtk-3.so.0".into(), vec!["extra/gtk3".into()]),
-            ("libc.so.6".into(), vec!["core/glibc".into()]),
-        ]))
+    /// Knows three libraries and nothing about dependency trees or installed programs.
+    struct FakeSystem;
+
+    impl System for FakeSystem {
+        fn find_libraries(&self, wanted: &[String]) -> Lookup {
+            let mut wanted = wanted.to_vec();
+            wanted.sort();
+            assert_eq!(wanted, ["libc.so.6", "libgtk-3.so.0", "libmystery.so.1", "libnss3.so"]);
+            Lookup::Found(BTreeMap::from([
+                ("libnss3.so".into(), vec!["nss".into()]),
+                ("libgtk-3.so.0".into(), vec!["gtk3".into()]),
+                ("libc.so.6".into(), vec!["glibc".into()]),
+            ]))
+        }
+        fn dependency_closure(&self, _: &[String]) -> Closure {
+            Closure::default()
+        }
+        fn exists(&self, _: &str) -> bool {
+            false
+        }
+    }
+
+    /// Has no file database.
+    pub struct BareSystem;
+
+    impl System for BareSystem {
+        fn find_libraries(&self, _: &[String]) -> Lookup {
+            Lookup::NoDatabase
+        }
+        fn dependency_closure(&self, _: &[String]) -> Closure {
+            Closure::default()
+        }
+        fn exists(&self, _: &str) -> bool {
+            false
+        }
     }
 
     #[test]
     fn translates_a_full_deb() {
         let mut deb = demo_deb();
-        let t = translate(&mut deb, &depmap(), 1, lookup, |_| false).unwrap();
+        let t = translate(&mut deb, &depmap(), 1, &FakeSystem).unwrap();
         let p = &t.package;
 
         assert_eq!((p.name.as_str(), p.version.to_string().as_str(), p.arch.as_str()), ("demo", "2:1.0~rc1-1", "x86_64"));
@@ -402,7 +455,7 @@ weird-tool --setup
         ];
         for (control, want) in cases {
             let mut deb = Deb::from_reader(Cursor::new(DebBuilder::new(control).build())).unwrap();
-            let err = translate(&mut deb, &depmap(), 1, |_| Lookup::NoDatabase, |_| false).err().unwrap().to_string();
+            let err = translate(&mut deb, &depmap(), 1, &BareSystem).err().unwrap().to_string();
             assert!(err.contains(want), "expected '{want}', got '{err}'");
         }
         let cases = [("amd64", "x86_64"), ("arm64", "aarch64"), ("all", "any")];
