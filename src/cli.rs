@@ -32,7 +32,7 @@ Environment:
   FERRY_GITHUB_TOKEN  Token for GitHub API requests
 ";
 
-const UNFINISHED: &[&str] = &["install", "add", "list", "check", "update", "remove"];
+const UNFINISHED: &[&str] = &["add", "list", "check", "update", "remove"];
 
 pub fn run(args: &[String]) -> ExitCode {
     let Some(first) = args.first() else {
@@ -51,6 +51,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         "inspect" => inspect(&args[1..]),
         "convert" => convert(&args[1..]),
+        "install" => install(&args[1..]),
         cmd if UNFINISHED.contains(&cmd) => {
             eprintln!("ferry: '{cmd}' is not implemented yet");
             ExitCode::FAILURE
@@ -96,6 +97,32 @@ fn convert(args: &[String]) -> ExitCode {
     };
     let (dry_run, direct, out) = opts;
     finish(crate::convert::run(&crate::convert::Options { deb, dry_run, direct, out }))
+}
+
+const INSTALL_USAGE: &str = "usage: ferry install <file.deb|name> [--direct]";
+
+fn install(args: &[String]) -> ExitCode {
+    let mut target = None;
+    let mut direct = false;
+    for a in args {
+        match a.as_str() {
+            "--direct" => direct = true,
+            s if s.starts_with('-') => return usage_error(&format!("unknown option '{s}'. {INSTALL_USAGE}")),
+            s if target.is_none() => target = Some(PathBuf::from(s)),
+            s => return usage_error(&format!("unexpected argument '{s}'. {INSTALL_USAGE}")),
+        }
+    }
+    let Some(target) = target else {
+        return usage_error(INSTALL_USAGE);
+    };
+    if !target.exists() && target.extension().is_none_or(|e| e != "deb") {
+        eprintln!("ferry: installing an app by name needs the app registry, which is not implemented yet; pass a .deb file");
+        return ExitCode::FAILURE;
+    }
+    finish(crate::convert::build_package(&target, direct, None).and_then(|pkg| {
+        println!("Built {}", pkg.display());
+        crate::install::install(&pkg)
+    }))
 }
 
 fn usage_error(msg: &str) -> ExitCode {

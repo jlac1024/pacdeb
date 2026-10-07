@@ -1,10 +1,11 @@
-//! `ferry convert`: turn a .deb into a pacman package. So far only --dry-run, which
-//! prints what would be built and everything that needs attention.
+//! `ferry convert`: turn a .deb into a pacman package, or with --dry-run, print what
+//! would be built and everything that needs attention.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use crate::build;
 use crate::deb::Deb;
 use crate::error::{Context, Result, bail};
 use crate::human;
@@ -20,21 +21,53 @@ pub struct Options {
 }
 
 pub fn run(opts: &Options) -> Result<()> {
-    if !opts.dry_run {
-        bail!("building packages is not implemented yet; use --dry-run to see what would be built");
+    if opts.dry_run {
+        let paths = Paths::from_env()?;
+        let depmap = DepMap::load(&paths.config)?;
+        let mut deb = Deb::open(&opts.deb)?;
+        let t = translate::translate(&mut deb, &depmap, 1, &translate::LiveSystem).context(opts.deb.display())?;
+        let backend = if opts.direct { "direct (.pkg.tar.zst written by Ferry)" } else { "makepkg (PKGBUILD)" };
+        let mut text = format!("Backend: {backend}\n");
+        if let Some(out) = &opts.out {
+            writeln!(text, "Output:  {}", out.display()).unwrap();
+        }
+        text.push_str(&report(&t));
+        let _ = std::io::stdout().write_all(text.as_bytes());
+        return Ok(());
+    }
+    let built = build_package(&opts.deb, opts.direct, opts.out.as_deref())?;
+    println!("Built {}", built.display());
+    Ok(())
+}
+
+/// Translates and builds a deb, printing the warnings first. Returns the package path.
+pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Result<PathBuf> {
+    if direct {
+        bail!("the direct backend is not implemented yet; leave out --direct to build with makepkg");
+    }
+    if !build::makepkg_available() {
+        bail!("makepkg was not found; install pacman's makepkg or wait for the direct backend");
     }
     let paths = Paths::from_env()?;
     let depmap = DepMap::load(&paths.config)?;
-    let mut deb = Deb::open(&opts.deb)?;
-    let t = translate::translate(&mut deb, &depmap, 1, &translate::LiveSystem).context(opts.deb.display())?;
-    let backend = if opts.direct { "direct (.pkg.tar.zst written by Ferry)" } else { "makepkg (PKGBUILD)" };
-    let mut text = format!("Backend: {backend}\n");
-    if let Some(out) = &opts.out {
-        writeln!(text, "Output:  {}", out.display()).unwrap();
+    let mut deb = Deb::open(deb_path)?;
+    let t = translate::translate(&mut deb, &depmap, 1, &translate::LiveSystem).context(deb_path.display())?;
+
+    let p = &t.package;
+    println!("Building {} {} from {}", p.name, p.version, deb_path.display());
+    if !t.warnings.is_empty() {
+        println!("{} (run convert --dry-run for the full report):", human::plural(t.warnings.len(), "warning", "warnings"));
+        for w in &t.warnings {
+            println!("  - {w}");
+        }
     }
-    text.push_str(&report(&t));
-    let _ = std::io::stdout().write_all(text.as_bytes());
-    Ok(())
+
+    let out_dir = match out {
+        Some(o) => std::path::absolute(o).context(o.display())?,
+        None => paths.packages_dir(),
+    };
+    let origin = deb_path.file_name().map_or_else(|| deb_path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    build::with_makepkg(&mut deb, p, &origin, &paths.work_dir(), &out_dir)
 }
 
 pub fn report(t: &Translation) -> String {
