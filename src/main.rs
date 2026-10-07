@@ -1,4 +1,9 @@
 mod cli;
+mod control;
+mod deb;
+mod error;
+mod inspect;
+mod relation;
 
 use std::process::ExitCode;
 
