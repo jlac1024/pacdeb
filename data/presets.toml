@@ -1,0 +1,25 @@
+# Ready made sources for known apps, used by 'ferry add <name>' when no --source is
+# given. Compiled into the binary.
+
+[proton-mail]
+note = "Proton publishes Stable, EarlyAccess and Alpha builds. Pick one with --channel, or set a global channel with 'ferry set --channel'."
+
+[proton-mail.source]
+type = "direct"
+feed = "https://proton.me/download/mail/linux/version.json"
+version_json = "Releases[CategoryName={channel}].Version"
+url_json = "Releases[CategoryName={channel}].File[Identifier=.deb (Ubuntu/Debian)].Url"
+checksum_json = "Releases[CategoryName={channel}].File[Identifier=.deb (Ubuntu/Debian)].Sha512CheckSum"
+default_channel = "Stable"
+
+[example-app]
+key_url = "https://apt.example.com/app/key.asc"
+key_fingerprint = "A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"
+note = "The apt repository is signed. Download the key from key_url and pass it with --key; Ferry checks it against the published fingerprint."
+
+[example-app.source]
+type = "apt"
+repo = "https://apt.example.com/app/stable"
+suite = "stable"
+component = "main"
+package = "example-app"
