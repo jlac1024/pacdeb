@@ -6,6 +6,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::build;
+use crate::clash;
 use crate::deb::Deb;
 use crate::error::{Context, Result};
 use crate::human;
@@ -28,7 +29,8 @@ pub fn run(opts: &Options) -> Result<()> {
         let paths = Paths::from_env()?;
         let tables = Tables::load(&paths.config)?;
         let mut deb = Deb::open(&opts.deb)?;
-        let t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(opts.deb.display())?;
+        let mut t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(opts.deb.display())?;
+        avoid_clash(&mut t.package, None, &clash::LiveLookup, Style::for_stdout());
         let backend = if opts.direct { "direct (.pkg.tar.zst written by pacdeb)" } else { "makepkg (PKGBUILD)" };
         let mut text = format!("Backend: {backend}\n");
         if let Some(out) = &opts.out {
@@ -48,6 +50,8 @@ pub struct Built {
     pub path: PathBuf,
     pub deb_version: String,
     pub pkgrel: u32,
+    /// The package name chosen because the deb's name is taken, to remember for the app.
+    pub renamed: Option<String>,
 }
 
 /// The pkgrel for a new build: 1 for a new upstream version, one more than last time
@@ -86,6 +90,38 @@ pub fn apply_overrides(p: &mut Package, app: &App) {
     p.optdepends.retain(|(d, _)| !app.drop_depends.contains(d));
 }
 
+/// Gives a package whose name a repo or the AUR also uses a name of its own, unless the
+/// app sets one. Returns the new name. When the lookup fails the name is kept, since
+/// a build should not depend on the AUR being reachable.
+pub fn avoid_clash(p: &mut Package, app: Option<&App>, lookup: &dyn clash::Lookup, st: Style) -> Option<String> {
+    if app.is_some_and(|a| a.pkgname.is_some()) {
+        return None;
+    }
+    match clash::choose(&p.name, lookup) {
+        Ok(None) => None,
+        Ok(Some(r)) => {
+            let base = std::mem::replace(&mut p.name, r.name.clone());
+            println!(
+                "{} {base} is also a package in {}, so a system update would replace this build.\n\
+                 Building it as {} instead, which provides and conflicts with {base}.",
+                st.warn("note:"),
+                r.because,
+                r.name
+            );
+            for list in [&mut p.provides, &mut p.conflicts] {
+                if !list.contains(&base) {
+                    list.push(base.clone());
+                }
+            }
+            Some(r.name)
+        }
+        Err(e) => {
+            println!("{} could not check whether {} is taken in the repos or the AUR ({e}); keeping the name", st.warn("warning:"), p.name);
+            None
+        }
+    }
+}
+
 /// Translates and builds a deb, printing the warnings first. `app` and `prev` are the
 /// tracked app's settings and last build, when there is one.
 pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Option<&App>, prev: Option<&AppState>) -> Result<Built> {
@@ -104,9 +140,10 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
     if let Some(app) = app {
         apply_overrides(&mut t.package, app);
     }
+    let style = Style::for_stdout();
+    let renamed = avoid_clash(&mut t.package, app, &clash::LiveLookup, style);
 
     let p = &t.package;
-    let style = Style::for_stdout();
     println!("Building {} {} from {}", style.bold(&p.name), p.version, deb_path.display());
     if !t.warnings.is_empty() {
         print!("\n{}", render_warnings(&t.warnings, style));
@@ -123,7 +160,7 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
         let origin = deb_path.file_name().map_or_else(|| deb_path.display().to_string(), |n| n.to_string_lossy().into_owned());
         build::with_makepkg(&mut deb, p, &origin, &paths.work_dir(), &out_dir)?
     };
-    Ok(Built { path, deb_version: p.deb_version.to_string(), pkgrel: p.version.pkgrel })
+    Ok(Built { path, deb_version: p.deb_version.to_string(), pkgrel: p.version.pkgrel, renamed })
 }
 
 /// Warnings grouped by kind, with script lines left out for system reasons grouped
@@ -408,6 +445,39 @@ mod tests {
         assert_eq!(p.conflicts, ["demo-bin"]);
         assert_eq!(p.depends, ["nss", "gtk3"]);
         assert!(p.optdepends.is_empty());
+    }
+
+    struct TakenInAur(&'static [&'static str]);
+
+    impl crate::clash::Lookup for TakenInAur {
+        fn repo_of(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn in_aur(&self, names: &[String]) -> Result<Vec<String>> {
+            Ok(names.iter().filter(|n| self.0.contains(&n.as_str())).cloned().collect())
+        }
+    }
+
+    #[test]
+    fn renames_packages_whose_name_is_taken() {
+        let bytes = DebBuilder::new("Package: demo\nVersion: 1.0\nArchitecture: amd64\n").build();
+        let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
+        let base = translate::translate(&mut deb, &translate::Tables::builtin(), 1, &BareSystem).unwrap().package;
+
+        let mut p = base.clone();
+        assert_eq!(avoid_clash(&mut p, None, &TakenInAur(&["demo"]), Style::plain()).as_deref(), Some("demo-deb"));
+        assert_eq!((p.name.as_str(), &p.provides[..], &p.conflicts[..]), ("demo-deb", &["demo".to_string()][..], &["demo".to_string()][..]));
+
+        let mut p = base.clone();
+        assert_eq!(avoid_clash(&mut p, None, &TakenInAur(&[]), Style::plain()), None);
+        assert_eq!(p.name, "demo");
+
+        // A name the app sets is kept as is, even when it is taken.
+        let mut app = App::new(crate::registry::SourceConfig::Manual {});
+        app.pkgname = Some("demo".into());
+        let mut p = base.clone();
+        assert_eq!(avoid_clash(&mut p, Some(&app), &TakenInAur(&["demo"]), Style::plain()), None);
+        assert_eq!(p.name, "demo");
     }
 
     #[test]
