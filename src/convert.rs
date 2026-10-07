@@ -205,6 +205,12 @@ pub fn report(t: &Translation, st: Style) -> String {
 
     section(&mut out, "Changes", &t.changes);
     section(&mut out, "Notes", &t.notes);
+    if !p.install_note.is_empty() {
+        writeln!(out, "\nInstall note (pacman shows this after installing):").unwrap();
+        for line in &p.install_note {
+            writeln!(out, "  | {line}").unwrap();
+        }
+    }
 
     if !t.desktop.is_empty() {
         writeln!(out, "\nLauncher entries:").unwrap();
@@ -278,6 +284,10 @@ fn describe(o: &Outcome) -> String {
             .collect::<Vec<_>>()
             .join("; "),
         Outcome::Hook(what) => format!("nothing, a pacman hook updates the {what}"),
+        Outcome::Service(steps) => {
+            let units: Vec<String> = steps.iter().map(|s| format!("{} {}", s.verb, s.unit)).collect();
+            format!("left to you ({}); the install note says how", units.join(", "))
+        }
         Outcome::Handled(why) => format!("nothing, {why}"),
         Outcome::AptRepo => "dropped, apt repository setup".to_string(),
         Outcome::Skipped(why) => format!("nothing, it {why}"),

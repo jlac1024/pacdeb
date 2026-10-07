@@ -16,10 +16,10 @@ const ZSTD_LEVEL: i32 = 3;
 
 /// Packs the tree at `tree` (laid out by tree::write) into `out_dir`. `now` is the build
 /// time in Unix seconds, used for builddate and every entry's mtime.
-pub fn pack(pkg: &Package, tree: &Path, out_dir: &Path, now: u64) -> Result<PathBuf> {
+pub fn pack(pkg: &Package, tree: &Path, install: Option<&str>, out_dir: &Path, now: u64) -> Result<PathBuf> {
     let size: u64 = pkg.nodes.iter().filter(|n| n.kind == NodeKind::File).map(|n| n.size).sum();
     let pkginfo = pkginfo(pkg, now, size);
-    let mtree = mtree(pkg, tree, pkginfo.as_bytes(), now)?;
+    let mtree = mtree(pkg, tree, pkginfo.as_bytes(), install.map(str::as_bytes), now)?;
 
     let name = format!("{}-{}-{}.pkg.tar.zst", pkg.name, pkg.version, pkg.arch);
     let dest = out_dir.join(&name);
@@ -30,6 +30,9 @@ pub fn pack(pkg: &Package, tree: &Path, out_dir: &Path, now: u64) -> Result<Path
 
     // pacman reads .PKGINFO first, so it goes at the front.
     append_bytes(&mut tar, ".PKGINFO", pkginfo.as_bytes(), now)?;
+    if let Some(script) = install {
+        append_bytes(&mut tar, ".INSTALL", script.as_bytes(), now)?;
+    }
     append_bytes(&mut tar, ".MTREE", &mtree, now)?;
 
     for n in &pkg.nodes {
@@ -103,6 +106,12 @@ fn pkginfo(pkg: &Package, now: u64, size: u64) -> String {
     field("size", &size.to_string());
     field("arch", &pkg.arch);
     field("license", &pkg.license);
+    for c in &pkg.conflicts {
+        field("conflict", c);
+    }
+    for p in &pkg.provides {
+        field("provides", p);
+    }
     for b in &pkg.backup {
         field("backup", b);
     }
@@ -116,9 +125,12 @@ fn pkginfo(pkg: &Package, now: u64, size: u64) -> String {
 }
 
 /// The gzipped mtree pacman keeps in its database to check installed files.
-fn mtree(pkg: &Package, tree: &Path, pkginfo: &[u8], now: u64) -> Result<Vec<u8>> {
+fn mtree(pkg: &Package, tree: &Path, pkginfo: &[u8], install: Option<&[u8]>, now: u64) -> Result<Vec<u8>> {
     let mut s = String::from("#mtree\n/set type=file uid=0 gid=0 mode=644\n");
     let time = format!("time={now}.0");
+    if let Some(script) = install {
+        writeln!(s, "./.INSTALL {time} size={} sha256digest={}", script.len(), sha256_hex(script)).unwrap();
+    }
     writeln!(s, "./.PKGINFO {time} size={} sha256digest={}", pkginfo.len(), sha256_hex(pkginfo)).unwrap();
     for n in &pkg.nodes {
         let path = format!(".{}", escape(&n.path));
@@ -221,7 +233,7 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         let tree_dir = base.join("tree");
         tree::write(&mut deb, &t.package, &tree_dir).unwrap();
-        let built = pack(&t.package, &tree_dir, &base, 1_700_000_000).unwrap();
+        let built = pack(&t.package, &tree_dir, Some("post_install() {\n  echo hi\n}\n"), &base, 1_700_000_000).unwrap();
         assert_eq!(built.file_name().unwrap(), "demo-1:2.0-1-x86_64.pkg.tar.zst");
 
         let raw = zstd::decode_all(File::open(&built).unwrap()).unwrap();
@@ -240,7 +252,8 @@ mod tests {
         }
 
         let names: Vec<&str> = entries.iter().map(|e| e.0.as_str()).collect();
-        assert_eq!(&names[..2], [".PKGINFO", ".MTREE"]);
+        assert_eq!(&names[..3], [".PKGINFO", ".INSTALL", ".MTREE"]);
+        assert_eq!(files[".INSTALL"], b"post_install() {\n  echo hi\n}\n");
         for (path, _, _, uid, user, _) in &entries {
             assert_eq!((*uid, user.as_deref()), (0, Some("root")), "{path}");
         }
@@ -280,6 +293,7 @@ mod tests {
             "./usr/bin/demo time=1700000000.0 mode=777 type=link link=../../opt/Demo\\040App/demo\n",
             &format!("./etc/demo.conf time=1700000000.0 size=4 sha256digest={}\n", sha256_hex(b"x=1\n")),
             &format!("./.PKGINFO time=1700000000.0 size={} ", pkginfo.len()),
+            &format!("./.INSTALL time=1700000000.0 size=29 sha256digest={}\n", sha256_hex(b"post_install() {\n  echo hi\n}\n")),
         ] {
             assert!(mtree.contains(want), "missing {want:?} in:\n{mtree}");
         }

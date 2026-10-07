@@ -68,12 +68,15 @@ pub struct Deps {
 }
 
 /// `installed` says which Arch packages are installed; when the deb offers
-/// alternatives, an installed one wins over the first one listed.
+/// alternatives, an installed one wins over the first one listed. `in_repos` says
+/// which names exist in the sync repos, which is what lets a naming rule map a name
+/// the table does not know.
 pub fn translate(
     control: &Control,
     deb_arch: &str,
     map: &DepMap,
     installed: impl FnOnce(&[String]) -> HashSet<String>,
+    in_repos: impl FnOnce(&[String]) -> HashSet<String>,
 ) -> Result<Deps> {
     let mut deps = Deps::default();
     let mut constraints = Vec::new();
@@ -96,12 +99,36 @@ pub fn translate(
         }
     }
 
+    // Names the table does not know get naming rules, but only names pacman confirms.
+    let unknown: Vec<&str> = parsed
+        .iter()
+        .flat_map(|(_, _, groups)| groups.iter().flatten())
+        .map(|a| a.name.as_str())
+        .filter(|n| map.get(n).is_none())
+        .collect();
+    let mut wanted: Vec<String> = Vec::new();
+    for n in &unknown {
+        for (c, _) in rule_candidates(n) {
+            if !wanted.contains(&c) {
+                wanted.push(c);
+            }
+        }
+    }
+    let existing = if wanted.is_empty() { HashSet::new() } else { in_repos(&wanted) };
+    let by_rule: HashMap<&str, (String, &str)> = unknown
+        .iter()
+        .filter_map(|n| rule_candidates(n).into_iter().find(|(c, _)| existing.contains(c)).map(|hit| (*n, hit)))
+        .collect();
+    let resolve = |name: &str| -> Option<String> {
+        map.get(name).map(String::from).or_else(|| by_rule.get(name).map(|(c, _)| c.clone()))
+    };
+
     let mut choices: Vec<String> = Vec::new();
     for (_, _, groups) in &parsed {
         for g in groups.iter().filter(|g| g.len() > 1) {
-            for m in g.iter().filter_map(|a| map.get(&a.name)).filter(|m| !m.is_empty()) {
-                if !choices.iter().any(|c| c == m) {
-                    choices.push(m.to_string());
+            for m in g.iter().filter_map(|a| resolve(&a.name)).filter(|m| !m.is_empty()) {
+                if !choices.contains(&m) {
+                    choices.push(m);
                 }
             }
         }
@@ -111,8 +138,8 @@ pub fn translate(
     for (field, optional, groups) in &parsed {
         for group in groups {
             let shown = format_group(group);
-            let mapped: Vec<(&Atom, &str)> = group.iter().filter_map(|a| map.get(&a.name).map(|m| (a, m))).collect();
-            let Some(&(first_atom, first)) = mapped.first() else {
+            let mapped: Vec<(&Atom, String)> = group.iter().filter_map(|a| resolve(&a.name).map(|m| (a, m))).collect();
+            let Some((first_atom, first)) = mapped.first().cloned() else {
                 deps.unmapped.push(format!("{field}: {shown}"));
                 continue;
             };
@@ -122,16 +149,18 @@ pub fn translate(
             }
             let (atom, arch) = mapped
                 .iter()
-                .find(|(_, m)| !m.is_empty() && installed.contains(*m))
-                .copied()
-                .unwrap_or((first_atom, first));
+                .find(|(_, m)| !m.is_empty() && installed.contains(m))
+                .cloned()
+                .unwrap_or((first_atom, first.clone()));
             if arch != first {
                 deps.notes.push(format!("{field}: picked {arch} from '{shown}' because it is installed"));
+            }
+            if let Some((_, rule)) = by_rule.get(atom.name.as_str()) {
+                deps.notes.push(format!("{field}: {} -> {arch} by naming rule ({rule}), confirmed in your repos", atom.name));
             }
             if atom.version.is_some() {
                 constraints.push(atom.to_string());
             }
-            let arch = arch.to_string();
             match *optional {
                 None if !deps.depends.contains(&arch) => deps.depends.push(arch),
                 Some(reason) if !deps.depends.contains(&arch) && !deps.optdepends.iter().any(|(p, _)| *p == arch) => {
@@ -156,6 +185,68 @@ pub fn translate(
         }
     }
     Ok(deps)
+}
+
+/// Arch names a Debian name might have, most specific rule first. Each is only used
+/// if the sync repos have a package by exactly that name.
+fn rule_candidates(name: &str) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    let mut push = |cand: String, rule: &'static str| {
+        if !cand.is_empty() && !out.iter().any(|(c, _)| *c == cand) {
+            out.push((cand, rule));
+        }
+    };
+    // Debian's 64 bit time_t transition renamed many libraries with a t64 suffix.
+    let base = name.strip_suffix("t64").unwrap_or(name);
+    if let Some(rest) = base.strip_prefix("python3-") {
+        push(format!("python-{rest}"), "python3-* is python-* on Arch");
+    }
+    if let Some(rest) = base.strip_suffix("-dev") {
+        push(rest.to_string(), "Arch has no separate -dev packages");
+    }
+    if let Some(stem) = strip_soversion(base) {
+        push(stem.to_string(), "library name without its soname version");
+        if let Some(bare) = stem.strip_prefix("lib") {
+            push(bare.to_string(), "library name without lib and its soname version");
+        }
+    }
+    push(base.to_string(), "same name on Arch");
+    out
+}
+
+/// "libsecret-1-0" -> "libsecret", "libnotify4" -> "libnotify". Only for lib* names.
+fn strip_soversion(name: &str) -> Option<&str> {
+    if !name.starts_with("lib") {
+        return None;
+    }
+    let stem = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-');
+    (stem != name && stem.len() > 3).then_some(stem)
+}
+
+/// Asks `pacman -Si` which of these exact names are packages in the sync repos.
+pub fn pacman_in_repos(names: &[String]) -> HashSet<String> {
+    let Ok(output) = Command::new("pacman").arg("-Si").args(names).env("LC_ALL", "C").output() else {
+        return HashSet::new();
+    };
+    let wanted: HashSet<&str> = names.iter().map(String::as_str).collect();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("Name")?.trim_start().strip_prefix(':').map(str::trim))
+        .filter(|n| wanted.contains(n))
+        .map(String::from)
+        .collect()
+}
+
+/// The installed Python as "X.Y", from `pacman -Q python`.
+pub fn pacman_python_version() -> Option<String> {
+    let output = Command::new("pacman").args(["-Q", "python"]).env("LC_ALL", "C").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = text.split_whitespace().nth(1)?;
+    let version = version.split_once(':').map_or(version, |(_, v)| v);
+    let mut parts = version.split(['.', '-']);
+    let (major, minor) = (parts.next()?, parts.next()?);
+    (major.chars().all(|c| c.is_ascii_digit()) && minor.chars().all(|c| c.is_ascii_digit()))
+        .then(|| format!("{major}.{minor}"))
 }
 
 /// Asks `pacman -Qq` which names are installed. pacman resolves provides and prints
@@ -245,7 +336,7 @@ mod tests {
              Conflicts: other-app\n",
         )
         .unwrap();
-        let d = translate(&control, "amd64", &m, |_| HashSet::new()).unwrap();
+        let d = translate(&control, "amd64", &m, |_| HashSet::new(), |_| HashSet::new()).unwrap();
         assert_eq!(d.depends, ["gtk3", "nss", "alsa-lib"]);
         assert_eq!(
             d.optdepends,
@@ -266,17 +357,57 @@ mod tests {
     fn prefers_installed_alternatives() {
         let m = map(&[("portal-gtk", "xdg-desktop-portal-gtk"), ("portal-kde", "xdg-desktop-portal-kde"), ("solo", "solo")]);
         let control = Control::parse("Package: a\nVersion: 1\nArchitecture: amd64\nDepends: portal-gtk | portal-kde, solo\n").unwrap();
-        let d = translate(&control, "amd64", &m, |names| {
-            // Only groups with a real choice are asked about.
-            assert_eq!(names, ["xdg-desktop-portal-gtk", "xdg-desktop-portal-kde"]);
-            HashSet::from(["xdg-desktop-portal-kde".to_string()])
-        })
+        let d = translate(
+            &control,
+            "amd64",
+            &m,
+            |names| {
+                // Only groups with a real choice are asked about.
+                assert_eq!(names, ["xdg-desktop-portal-gtk", "xdg-desktop-portal-kde"]);
+                HashSet::from(["xdg-desktop-portal-kde".to_string()])
+            },
+            |_| HashSet::new(),
+        )
         .unwrap();
         assert_eq!(d.depends, ["xdg-desktop-portal-kde", "solo"]);
         assert_eq!(d.notes, ["Depends: picked xdg-desktop-portal-kde from 'portal-gtk | portal-kde' because it is installed"]);
 
-        let d = translate(&control, "amd64", &m, |_| HashSet::new()).unwrap();
+        let d = translate(&control, "amd64", &m, |_| HashSet::new(), |_| HashSet::new()).unwrap();
         assert_eq!(d.depends, ["xdg-desktop-portal-gtk", "solo"]);
+    }
+
+    #[test]
+    fn rule_candidates_by_name() {
+        let names = |n: &str| rule_candidates(n).into_iter().map(|(c, _)| c).collect::<Vec<_>>();
+        let cases: &[(&str, &[&str])] = &[
+            ("python3-requests", &["python-requests", "python3-requests"]),
+            ("libsecret-1-0", &["libsecret", "secret", "libsecret-1-0"]),
+            ("libnotify4", &["libnotify", "notify", "libnotify4"]),
+            ("libfoo3t64", &["libfoo", "foo", "libfoo3"]),
+            ("libfoo-dev", &["libfoo", "libfoo-dev"]),
+            ("psmisc", &["psmisc"]),
+            ("libpam0g", &["libpam0g"]),
+        ];
+        for (input, want) in cases {
+            assert_eq!(names(input), *want, "{input}");
+        }
+    }
+
+    #[test]
+    fn maps_by_rule_only_when_the_repos_have_it() {
+        let control = Control::parse(
+            "Package: a\nVersion: 1\nArchitecture: amd64\nDepends: python3-requests (>= 2), libfoo2, psmisc, made-up-thing\n",
+        )
+        .unwrap();
+        let d = translate(&control, "amd64", &map(&[]), |_| HashSet::new(), |asked| {
+            assert!(asked.contains(&"python-requests".to_string()));
+            ["python-requests", "libfoo", "psmisc"].iter().map(|s| s.to_string()).collect()
+        })
+        .unwrap();
+        assert_eq!(d.depends, ["python-requests", "libfoo", "psmisc"]);
+        assert_eq!(d.unmapped, ["Depends: made-up-thing"]);
+        assert!(d.notes.iter().any(|n| n == "Depends: python3-requests -> python-requests by naming rule (python3-* is python-* on Arch), confirmed in your repos"), "{:?}", d.notes);
+        assert!(d.notes.iter().any(|n| n.contains("psmisc -> psmisc by naming rule (same name on Arch)")), "{:?}", d.notes);
     }
 
     #[test]
@@ -296,7 +427,7 @@ mod tests {
     #[test]
     fn bad_relation_is_an_error() {
         let control = Control::parse("Package: a\nVersion: 1\nArchitecture: amd64\nDepends: foo (>= 1\n").unwrap();
-        let err = translate(&control, "amd64", &map(&[]), |_| HashSet::new()).unwrap_err().to_string();
+        let err = translate(&control, "amd64", &map(&[]), |_| HashSet::new(), |_| HashSet::new()).unwrap_err().to_string();
         assert!(err.starts_with("Depends: "), "{err}");
     }
 }

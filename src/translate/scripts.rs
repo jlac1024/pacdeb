@@ -22,6 +22,20 @@ pub enum Action {
     Mkdir { path: String },
     /// Fine when the path ends up in the package; pacman removes it then.
     Remove { path: String },
+    /// A system user, created on Arch from a sysusers.d file.
+    SystemUser { name: String, home: Option<String>, comment: Option<String> },
+    SystemGroup { name: String },
+    GroupMember { user: String, group: String },
+}
+
+/// What a script does to a service. Arch packages never enable or start services
+/// themselves, so these become a note telling the person what to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceStep {
+    pub verb: String,
+    pub unit: String,
+    /// A user service (`systemctl --user`) rather than a system one.
+    pub user: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +45,8 @@ pub enum Outcome {
     Hook(&'static str),
     /// Nothing to do on Arch; the value says why.
     Handled(&'static str),
+    /// Enabling or starting services, left to the person on Arch.
+    Service(Vec<ServiceStep>),
     AptRepo,
     /// The command sits in a branch that never runs for this package.
     Skipped(String),
@@ -65,6 +81,9 @@ pub fn describe_action(a: &Action) -> String {
         Action::Write { path, content } => format!("{path} with the script's {} bytes", content.len()),
         Action::Mkdir { path } => format!("directory {path}"),
         Action::Remove { path } => format!("removal of {path}"),
+        Action::SystemUser { name, .. } => format!("system user {name}"),
+        Action::SystemGroup { name } => format!("system group {name}"),
+        Action::GroupMember { user, group } => format!("{user} in group {group}"),
     }
 }
 
@@ -564,7 +583,22 @@ impl Analyzer<'_> {
             "install" => install(args),
             "xdg-icon-resource" if args.first().is_some_and(|a| a == "forceupdate") => Outcome::Hook("icon cache"),
             "xdg-desktop-menu" if args.first().is_some_and(|a| a == "forceupdate") => Outcome::Hook("desktop database"),
-            "systemctl" if args.first().is_some_and(|a| a == "daemon-reload") => Outcome::Hook("systemd reload"),
+            "adduser" | "useradd" => add_user(first, args),
+            "addgroup" | "groupadd" => add_group(args),
+            "usermod" => usermod(args),
+            "gpasswd" => gpasswd(args),
+            "deluser" | "delgroup" | "userdel" | "groupdel" => {
+                Outcome::Handled("Arch keeps system users and groups when a package is removed")
+            }
+            "systemctl" => systemctl(args),
+            "deb-systemd-helper" => deb_systemd_helper(args),
+            "deb-systemd-invoke" => deb_systemd_invoke(args),
+            "invoke-rc.d" | "service" => sysv_service(first, args),
+            "update-rc.d" => Outcome::Handled("SysV init links are not used on Arch"),
+            "dpkg-maintscript-helper" => {
+                Outcome::Handled("dpkg's own config file bookkeeping; pacman tracks config files itself")
+            }
+            "dpkg-trigger" => Outcome::Handled("dpkg triggers have no pacman counterpart; pacman hooks cover the common ones"),
             f => match HOOKS.iter().find(|(name, _)| *name == f) {
                 Some((_, hook)) => Outcome::Hook(hook),
                 None => Outcome::Unknown("no translation for this command".into()),
@@ -781,6 +815,205 @@ fn install(args: &[String]) -> Outcome {
         actions.push(Action::Chmod { path: to.clone(), mode });
     }
     Outcome::Actions(actions)
+}
+
+/// A literal user or group name: no expansions, nothing odd.
+fn literal_name(s: &str) -> Option<String> {
+    let ok = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c));
+    ok.then(|| s.to_string())
+}
+
+/// Splits arguments into option values and positionals. `takes_value` lists options
+/// that consume the next word. Unresolved words in option position (like an
+/// "$ADDUSER_OPTS" holding flags) are skipped.
+fn split_args<'a>(args: &'a [String], takes_value: &[&str]) -> (HashMap<&'a str, &'a str>, Vec<&'a str>) {
+    let mut opts = HashMap::new();
+    let mut positional = Vec::new();
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let a = a.as_str();
+        if let Some((k, v)) = a.split_once('=').filter(|(k, _)| k.starts_with("--")) {
+            opts.insert(k, v);
+        } else if takes_value.contains(&a) {
+            if let Some(v) = args.get(i + 1) {
+                opts.insert(a, v.as_str());
+            }
+            i += 1;
+        } else if a.starts_with('-') {
+            opts.insert(a, "");
+        } else if !(a.starts_with('$') && positional.is_empty() && args.len() > i + 1) {
+            positional.push(a);
+        }
+        i += 1;
+    }
+    (opts, positional)
+}
+
+/// `adduser [options] NAME`, `adduser USER GROUP` and `useradd [options] NAME`.
+/// Debian policy only lets maintainer scripts create system users, so every user
+/// created here becomes a sysusers.d entry.
+fn add_user(cmd: &str, args: &[String]) -> Outcome {
+    const VALUE: [&str; 20] = [
+        "--home", "--shell", "--gecos", "--comment", "--ingroup", "--uid", "--gid", "--firstuid", "--lastuid", "--add_extra_groups",
+        "-d", "-s", "-c", "-g", "-G", "-u", "-k", "-K", "-b", "--home-dir",
+    ];
+    let (opts, names) = split_args(args, &VALUE);
+    let unreadable = || Outcome::Unknown(format!("could not read the {cmd} arguments"));
+    match names.as_slice() {
+        [user, group] if cmd == "adduser" => match (literal_name(user), literal_name(group)) {
+            (Some(user), Some(group)) => Outcome::Actions(vec![Action::GroupMember { user, group }]),
+            _ => unreadable(),
+        },
+        [name] => {
+            let Some(name) = literal_name(name) else {
+                return unreadable();
+            };
+            // `adduser --group NAME` without --system is addgroup.
+            if cmd == "adduser" && opts.contains_key("--group") && !opts.contains_key("--system") {
+                return Outcome::Actions(vec![Action::SystemGroup { name }]);
+            }
+            let home = ["--home", "-d", "--home-dir"]
+                .iter()
+                .find_map(|k| opts.get(k))
+                .filter(|h| literal_path(h).is_some())
+                .map(|h| h.to_string());
+            let comment = ["--gecos", "--comment", "-c"].iter().find_map(|k| opts.get(k)).map(|c| c.to_string());
+            let mut actions = vec![Action::SystemUser { name: name.clone(), home, comment }];
+            for key in ["--ingroup", "-g", "-G", "--add_extra_groups"] {
+                for group in opts.get(key).into_iter().flat_map(|g| g.split(',')) {
+                    match literal_name(group) {
+                        Some(group) if group != name => actions.push(Action::GroupMember { user: name.clone(), group }),
+                        Some(_) => {}
+                        None => return unreadable(),
+                    }
+                }
+            }
+            Outcome::Actions(actions)
+        }
+        _ => unreadable(),
+    }
+}
+
+/// `addgroup [--system] NAME`, `addgroup USER GROUP` and `groupadd [-r] NAME`.
+fn add_group(args: &[String]) -> Outcome {
+    let (_, names) = split_args(args, &["--gid", "-g", "-K"]);
+    match names.as_slice() {
+        [name] => match literal_name(name) {
+            Some(name) => Outcome::Actions(vec![Action::SystemGroup { name }]),
+            None => Outcome::Unknown("could not read the group name".into()),
+        },
+        [user, group] => match (literal_name(user), literal_name(group)) {
+            (Some(user), Some(group)) => Outcome::Actions(vec![Action::GroupMember { user, group }]),
+            _ => Outcome::Unknown("could not read the group arguments".into()),
+        },
+        _ => Outcome::Unknown("could not read the group arguments".into()),
+    }
+}
+
+/// `usermod -aG GROUP[,GROUP] USER`.
+fn usermod(args: &[String]) -> Outcome {
+    let (opts, names) = split_args(args, &["-G", "-aG", "--groups", "-g", "-d", "-s", "-c", "-u"]);
+    let groups = opts.get("-aG").or_else(|| opts.get("-G")).or_else(|| opts.get("--groups"));
+    let appends = opts.contains_key("-aG") || opts.contains_key("-a") || opts.contains_key("--append");
+    match (groups, names.as_slice()) {
+        (Some(groups), [user]) if appends => {
+            let mut actions = Vec::new();
+            for g in groups.split(',') {
+                match (literal_name(user), literal_name(g)) {
+                    (Some(user), Some(group)) => actions.push(Action::GroupMember { user, group }),
+                    _ => return Outcome::Unknown("could not read the usermod arguments".into()),
+                }
+            }
+            Outcome::Actions(actions)
+        }
+        _ => Outcome::Unknown("only 'usermod -aG <groups> <user>' is translated".into()),
+    }
+}
+
+/// `gpasswd -a USER GROUP`.
+fn gpasswd(args: &[String]) -> Outcome {
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["-a", user, group] => match (literal_name(user), literal_name(group)) {
+            (Some(user), Some(group)) => Outcome::Actions(vec![Action::GroupMember { user, group }]),
+            _ => Outcome::Unknown("could not read the gpasswd arguments".into()),
+        },
+        _ => Outcome::Unknown("only 'gpasswd -a <user> <group>' is translated".into()),
+    }
+}
+
+fn unit_name(u: &str) -> Option<String> {
+    let name = u.trim_matches(['\'', '"']);
+    if name.is_empty() || unresolved(name) || name.contains(['*', '?', '/']) {
+        return None;
+    }
+    Some(if name.contains('.') { name.to_string() } else { format!("{name}.service") })
+}
+
+/// Turns "enable"/"start" style verbs on units into service steps, and the rest into
+/// nothing to do.
+fn service_steps(verb: &str, units: &[&str], user: bool) -> Outcome {
+    let verb = match verb {
+        "enable" | "reenable" => "enable",
+        "start" | "restart" | "try-restart" | "reload" | "reload-or-restart" | "try-reload-or-restart" => "start",
+        "stop" | "disable" => return Outcome::Handled("pacman does not stop or disable services; do it yourself if needed"),
+        "daemon-reload" => return Outcome::Hook("systemd reload"),
+        "mask" | "unmask" | "is-enabled" | "is-active" | "status" | "preset" | "was-enabled" | "debian-installed"
+        | "update-state" | "purge" => return Outcome::Handled("dpkg's own service bookkeeping, not needed on Arch"),
+        other => return Outcome::Unknown(format!("service action '{other}' is not translated")),
+    };
+    let mut steps = Vec::new();
+    for u in units {
+        match unit_name(u) {
+            Some(unit) => steps.push(ServiceStep { verb: verb.to_string(), unit, user }),
+            None => return Outcome::Unknown(format!("could not read the unit name '{u}'")),
+        }
+    }
+    if steps.is_empty() {
+        return Outcome::Unknown("no unit named".into());
+    }
+    Outcome::Service(steps)
+}
+
+fn systemctl(args: &[String]) -> Outcome {
+    let user = args.iter().any(|a| a == "--user" || a == "--global");
+    let now = args.iter().any(|a| a == "--now");
+    let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+    let Some((verb, units)) = words.split_first() else {
+        return Outcome::Unknown("systemctl without a command".into());
+    };
+    match service_steps(verb, units, user) {
+        // `enable --now` also starts.
+        Outcome::Service(mut steps) if now && *verb == "enable" => {
+            let starts: Vec<ServiceStep> = steps.iter().map(|s| ServiceStep { verb: "start".into(), ..s.clone() }).collect();
+            steps.extend(starts);
+            Outcome::Service(steps)
+        }
+        other => other,
+    }
+}
+
+/// debhelper's wrapper: `deb-systemd-helper [--user] [--quiet] VERB UNIT...`.
+fn deb_systemd_helper(args: &[String]) -> Outcome {
+    let user = args.iter().any(|a| a == "--user");
+    let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+    match words.split_first() {
+        Some((verb, units)) => service_steps(verb, units, user),
+        None => Outcome::Unknown("deb-systemd-helper without a command".into()),
+    }
+}
+
+/// `deb-systemd-invoke [--user] VERB UNIT...`.
+fn deb_systemd_invoke(args: &[String]) -> Outcome {
+    deb_systemd_helper(args)
+}
+
+/// `invoke-rc.d [--quiet] NAME ACTION` and `service NAME ACTION`.
+fn sysv_service(cmd: &str, args: &[String]) -> Outcome {
+    let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+    match words.as_slice() {
+        [name, action, ..] => service_steps(action, &[*name], false),
+        _ => Outcome::Unknown(format!("could not read the {cmd} arguments")),
+    }
 }
 
 fn write_heredoc(target: &str, h: &Heredoc, vars: &HashMap<String, String>) -> Outcome {
@@ -1375,6 +1608,7 @@ mod tests {
             Outcome::AptRepo => "apt",
             Outcome::Skipped(_) => "skipped",
             Outcome::Conditional { .. } => "conditional",
+            Outcome::Service(_) => "service",
             Outcome::Unknown(_) => "unknown",
         }
     }
@@ -1415,7 +1649,23 @@ mod tests {
             ("postinst", "xdg-icon-resource forceupdate --theme hicolor", Some("hook")),
             ("postinst", "xdg-desktop-menu install /opt/App/app.desktop", Some("unknown")),
             ("postinst", "systemctl daemon-reload", Some("hook")),
-            ("postinst", "systemctl enable app.service", Some("unknown")),
+            ("postinst", "systemctl enable app.service", Some("service")),
+            ("postinst", "deb-systemd-helper enable app.service", Some("service")),
+            ("postinst", "deb-systemd-helper --quiet was-enabled app.service", Some("handled")),
+            ("postinst", "deb-systemd-invoke start app.service", Some("service")),
+            ("postinst", "invoke-rc.d app start", Some("service")),
+            ("prerm", "deb-systemd-invoke stop app.service", Some("handled")),
+            ("postinst", "update-rc.d app defaults", Some("handled")),
+            ("preinst", "dpkg-maintscript-helper rm_conffile /etc/init.d/app -- \"$@\"", Some("handled")),
+            ("postinst", "systemctl start 'app@*'", Some("unknown")),
+            ("postinst", "adduser --system --home /var/lib/app app", Some("actions")),
+            ("postinst", "adduser $OPTS _app_net", Some("actions")),
+            ("postinst", "useradd -r -d /var/lib/app -s /usr/bin/nologin -G video,audio app", Some("actions")),
+            ("postinst", "addgroup --system appgroup", Some("actions")),
+            ("postinst", "adduser app video", Some("actions")),
+            ("postinst", "usermod -aG video app", Some("actions")),
+            ("postinst", "adduser --system $NAME", Some("unknown")),
+            ("postrm", "deluser --quiet app", Some("handled")),
             ("postinst", "echo 'x' > /etc/app.conf", Some("unknown")),
             ("postinst", "apt-get update", Some("apt")),
             ("postinst", "echo deb http://x stable main > /etc/apt/sources.list.d/x.list", Some("apt")),
@@ -1578,6 +1828,32 @@ one_liner
         assert_eq!(cmds[0].redirects, ["/etc/f", "/var/log/y", "in", "/dev/null"]);
         let seps: Vec<Sep> = split_commands(tokenize("a && b || c; d", &vars)).iter().map(|c| c.sep).collect();
         assert_eq!(seps, [Sep::And, Sep::Or, Sep::Semi, Sep::End]);
+    }
+
+    #[test]
+    fn reads_users_groups_and_services() {
+        let one = |line: &str| run("postinst", line).remove(0).2;
+        assert_eq!(
+            one("useradd -r -d /var/lib/app -c 'App daemon' -G video,audio app"),
+            Outcome::Actions(vec![
+                Action::SystemUser { name: "app".into(), home: Some("/var/lib/app".into()), comment: Some("App daemon".into()) },
+                Action::GroupMember { user: "app".into(), group: "video".into() },
+                Action::GroupMember { user: "app".into(), group: "audio".into() },
+            ])
+        );
+        assert_eq!(
+            one("adduser --system --group --no-create-home --gecos \"App\" app"),
+            Outcome::Actions(vec![Action::SystemUser { name: "app".into(), home: None, comment: Some("App".into()) }])
+        );
+        assert_eq!(one("adduser --group appgroup"), Outcome::Actions(vec![Action::SystemGroup { name: "appgroup".into() }]));
+        assert_eq!(
+            one("systemctl --user enable --now app-env.service"),
+            Outcome::Service(vec![
+                ServiceStep { verb: "enable".into(), unit: "app-env.service".into(), user: true },
+                ServiceStep { verb: "start".into(), unit: "app-env.service".into(), user: true },
+            ])
+        );
+        assert_eq!(one("invoke-rc.d --quiet app restart"), Outcome::Service(vec![ServiceStep { verb: "start".into(), unit: "app.service".into(), user: false }]));
     }
 
     #[test]

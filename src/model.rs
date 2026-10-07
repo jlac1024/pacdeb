@@ -57,8 +57,12 @@ pub struct Package {
     pub depends: Vec<String>,
     /// (package, reason)
     pub optdepends: Vec<(String, String)>,
+    pub provides: Vec<String>,
+    pub conflicts: Vec<String>,
     /// Config files pacman should keep on upgrade, relative to / as PKGBUILD wants them.
     pub backup: Vec<String>,
+    /// Text pacman shows after a fresh install, such as which services to enable.
+    pub install_note: Vec<String>,
     /// Sorted by path, every parent directory present.
     pub nodes: Vec<Node>,
 }

@@ -4,8 +4,10 @@ mod deps;
 mod desktop;
 mod elf;
 mod fs;
+mod pam;
 mod pathutil;
 mod scripts;
+mod services;
 mod soname;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -38,6 +40,10 @@ pub trait System {
     fn exists(&self, program: &str) -> bool;
     /// Which of these packages, or packages providing them, are installed.
     fn installed(&self, names: &[String]) -> HashSet<String>;
+    /// Which of these exact names are packages in the sync repos.
+    fn in_repos(&self, names: &[String]) -> HashSet<String>;
+    /// The installed Python's "X.Y", for placing Python modules.
+    fn python_version(&self) -> Option<String>;
 }
 
 /// Answers from pacman's databases and the real filesystem.
@@ -63,6 +69,14 @@ impl System for LiveSystem {
 
     fn installed(&self, names: &[String]) -> HashSet<String> {
         deps::pacman_installed(names)
+    }
+
+    fn in_repos(&self, names: &[String]) -> HashSet<String> {
+        deps::pacman_in_repos(names)
+    }
+
+    fn python_version(&self) -> Option<String> {
+        deps::pacman_python_version()
     }
 }
 
@@ -123,8 +137,9 @@ pub fn translate<R: Read + Seek>(
     let arch = map_arch(&deb_arch)?;
     let description = control.description().map(|(s, _)| s.to_string()).unwrap_or_default();
     let url = control.get("Homepage").map(String::from);
-    let deps = deps::translate(control, &deb_arch, depmap, |names| system.installed(names))?;
+    let deps = deps::translate(control, &deb_arch, depmap, |names| system.installed(names), |names| system.in_repos(names))?;
     let control_files = deb.control_files.clone();
+    let python = system.python_version();
 
     let mut entries = Vec::new();
     let mut contents = HashMap::new();
@@ -134,7 +149,8 @@ pub fn translate<R: Read + Seek>(
         if e.kind != EntryKind::File {
             return Ok(());
         }
-        let wanted_text = e.path.ends_with(".desktop") || e.path.starts_with("/etc/cron");
+        let wanted_text =
+            e.path.ends_with(".desktop") || e.path.starts_with("/etc/cron") || e.path.starts_with("/etc/pam.d/");
         if wanted_text && e.size <= TEXT_LIMIT {
             let mut buf = Vec::new();
             r.read_to_end(&mut buf)?;
@@ -153,7 +169,8 @@ pub fn translate<R: Read + Seek>(
         Ok(())
     })?;
 
-    let fs::FsResult { mut nodes, map, mut changes, mut warnings } = fs::apply(&entries, arch, &contents);
+    let fs::FsResult { mut nodes, map, mut changes, mut warnings } =
+        fs::apply(&entries, arch, &contents, python.as_deref());
 
     let mut script_cmds = Vec::new();
     {
@@ -164,7 +181,15 @@ pub fn translate<R: Read + Seek>(
             }
         }
     }
-    apply_actions(&mut nodes, &map, &script_cmds, &mut changes, &mut warnings);
+    apply_actions(&mut nodes, &map, &script_cmds, &name, &mut changes, &mut warnings);
+    rewrite_pam(&mut nodes, &contents, &mut changes, &mut warnings);
+    let services::Note { lines: install_note, warnings: service_warnings } = services::note(&script_cmds, &nodes);
+    warnings.extend(service_warnings);
+    if nodes.iter().any(|n| pathutil::is_under(&n.path, "/etc/init.d") && !n.is_dir())
+        && !nodes.iter().any(|n| n.path.starts_with("/usr/lib/systemd/system/"))
+    {
+        warnings.push("ships only a SysV init script in /etc/init.d; Arch runs services through systemd units, so this service will not start".into());
+    }
 
     changes.extend(fs::fix_modes(&mut nodes));
     ensure_parents(&mut nodes);
@@ -231,7 +256,10 @@ pub fn translate<R: Read + Seek>(
             license: "custom".to_string(),
             depends: deps.depends,
             optdepends: deps.optdepends,
+            provides: Vec::new(),
+            conflicts: Vec::new(),
             backup,
+            install_note,
             nodes,
         },
         changes,
@@ -285,6 +313,8 @@ fn package_facts<'a>(nodes: &'a [Node], map: &'a fs::PathMap, name: &str) -> imp
         let p = map.apply(p);
         match facts.get(p.as_str()) {
             Some(f) => Some(*f),
+            // Scripts test this to see whether systemd is running; on Arch it always is.
+            None if p == "/run/systemd/system" => Some(PathFact::Dir),
             None if private.iter().any(|dir| pathutil::is_under(&p, dir)) => Some(PathFact::Missing),
             None => None,
         }
@@ -314,10 +344,12 @@ fn apply_actions(
     nodes: &mut Vec<Node>,
     map: &fs::PathMap,
     cmds: &[ScriptCommand],
+    pkgname: &str,
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
     let mut removals = Vec::new();
+    let mut sysusers = Sysusers::default();
     for c in cmds {
         let Outcome::Actions(actions) = &c.outcome else {
             continue;
@@ -385,13 +417,93 @@ fn apply_actions(
                 // Checked once everything else is in place: scripts often remove a file
                 // right before writing it.
                 Action::Remove { path } => removals.push((at.clone(), map.apply(path))),
+                Action::SystemUser { name, home, comment } => sysusers.user(name, home.as_deref(), comment.as_deref()),
+                Action::SystemGroup { name } => sysusers.group(name),
+                Action::GroupMember { user, group } => sysusers.member(user, group),
             }
         }
+    }
+    if let Some(text) = sysusers.render() {
+        let path = format!("/usr/lib/sysusers.d/{pkgname}.conf");
+        changes.push(format!(
+            "added {path} so systemd creates the users and groups the scripts made: {}",
+            sysusers.names().join(", ")
+        ));
+        nodes.push(Node { path, kind: NodeKind::File, mode: 0o644, size: text.len() as u64, source: Source::Inline(text.into_bytes()) });
     }
     for (at, path) in removals {
         if !nodes.iter().any(|n| n.path == path) {
             warnings.push(format!("{at}: removes {path}, which is not in the package; check by hand"));
         }
+    }
+}
+
+/// Users, groups and memberships for a sysusers.d file. systemd's pacman hook creates
+/// them on install, the Arch way to do what adduser does in a Debian script.
+#[derive(Default)]
+struct Sysusers {
+    groups: Vec<String>,
+    users: Vec<(String, Option<String>, Option<String>)>,
+    members: Vec<(String, String)>,
+}
+
+impl Sysusers {
+    fn group(&mut self, name: &str) {
+        if !self.groups.iter().any(|g| g == name) {
+            self.groups.push(name.to_string());
+        }
+    }
+    fn user(&mut self, name: &str, home: Option<&str>, comment: Option<&str>) {
+        if !self.users.iter().any(|(u, _, _)| u == name) {
+            self.users.push((name.to_string(), home.map(String::from), comment.map(String::from)));
+        }
+    }
+    fn member(&mut self, user: &str, group: &str) {
+        let pair = (user.to_string(), group.to_string());
+        if !self.members.contains(&pair) {
+            self.members.push(pair);
+        }
+    }
+    fn names(&self) -> Vec<String> {
+        self.groups.iter().chain(self.users.iter().map(|(u, _, _)| u)).cloned().collect()
+    }
+    fn render(&self) -> Option<String> {
+        if self.groups.is_empty() && self.users.is_empty() && self.members.is_empty() {
+            return None;
+        }
+        let mut s = String::from("# Generated by Ferry from the deb's maintainer scripts.\n");
+        for g in &self.groups {
+            s.push_str(&format!("g {g} -\n"));
+        }
+        for (u, home, comment) in &self.users {
+            // sysusers wants the comment quoted and refuses quotes inside it.
+            let comment = comment.as_deref().map_or("-".to_string(), |c| format!("\"{}\"", c.replace('"', "")));
+            s.push_str(&format!("u {u} - {comment} {}\n", home.as_deref().unwrap_or("-")));
+        }
+        for (u, g) in &self.members {
+            s.push_str(&format!("m {u} {g}\n"));
+        }
+        Some(s)
+    }
+}
+
+/// Rewrites Debian PAM includes in /etc/pam.d files so logins for the service work.
+fn rewrite_pam(nodes: &mut [Node], contents: &HashMap<String, Vec<u8>>, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
+    for n in nodes.iter_mut().filter(|n| n.kind == NodeKind::File && n.path.starts_with("/etc/pam.d/")) {
+        let Some(bytes) = n.deb_path().and_then(|p| contents.get(p)) else {
+            continue;
+        };
+        let Some(r) = pam::rewrite(&String::from_utf8_lossy(bytes)) else {
+            continue;
+        };
+        for c in &r.changes {
+            changes.push(format!("{}: {c}", n.path));
+        }
+        for u in &r.unknown {
+            warnings.push(format!("{}: @include {u} is a Debian PAM file Ferry has no Arch line for", n.path));
+        }
+        n.size = r.text.len() as u64;
+        n.source = Source::Inline(r.text.into_bytes());
     }
 }
 
@@ -473,6 +585,12 @@ weird-tool --setup
         fn exists(&self, _: &str) -> bool {
             false
         }
+        fn in_repos(&self, _: &[String]) -> HashSet<String> {
+            HashSet::new()
+        }
+        fn python_version(&self) -> Option<String> {
+            Some("3.14".into())
+        }
         fn installed(&self, _: &[String]) -> HashSet<String> {
             HashSet::new()
         }
@@ -490,6 +608,12 @@ weird-tool --setup
         }
         fn exists(&self, _: &str) -> bool {
             false
+        }
+        fn in_repos(&self, _: &[String]) -> HashSet<String> {
+            HashSet::new()
+        }
+        fn python_version(&self) -> Option<String> {
+            None
         }
         fn installed(&self, _: &[String]) -> HashSet<String> {
             HashSet::new()
