@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::build;
 use crate::deb::Deb;
-use crate::error::{Context, Result, bail};
+use crate::error::{Context, Result};
 use crate::human;
 use crate::model::NodeKind;
 use crate::paths::Paths;
@@ -42,12 +42,13 @@ pub fn run(opts: &Options) -> Result<()> {
 
 /// Translates and builds a deb, printing the warnings first. Returns the package path.
 pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Result<PathBuf> {
-    if direct {
-        bail!("the direct backend is not implemented yet; leave out --direct to build with makepkg");
-    }
-    if !build::makepkg_available() {
-        bail!("makepkg was not found; install pacman's makepkg or wait for the direct backend");
-    }
+    let direct = direct || {
+        let missing = !build::makepkg_available();
+        if missing {
+            println!("makepkg was not found, so Ferry writes the package itself (--direct)");
+        }
+        missing
+    };
     let paths = Paths::from_env()?;
     let depmap = DepMap::load(&paths.config)?;
     let mut deb = Deb::open(deb_path)?;
@@ -66,6 +67,9 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>) -> Resul
         Some(o) => std::path::absolute(o).context(o.display())?,
         None => paths.packages_dir(),
     };
+    if direct {
+        return build::direct(&mut deb, p, &paths.work_dir(), &out_dir);
+    }
     let origin = deb_path.file_name().map_or_else(|| deb_path.display().to_string(), |n| n.to_string_lossy().into_owned());
     build::with_makepkg(&mut deb, p, &origin, &paths.work_dir(), &out_dir)
 }

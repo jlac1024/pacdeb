@@ -1,5 +1,6 @@
 //! Turns the translated model into a .pkg.tar.zst.
 
+mod direct;
 mod pkgbuild;
 mod tree;
 
@@ -54,6 +55,30 @@ pub fn with_makepkg<R: Read + Seek>(
     };
     remove_tree(&tree)?;
     Ok(built)
+}
+
+/// Builds without makepkg: Ferry writes .PKGINFO, .MTREE and the archive itself.
+pub fn direct<R: Read + Seek>(deb: &mut Deb<R>, pkg: &Package, work_root: &Path, out_dir: &Path) -> Result<PathBuf> {
+    let work = work_root.join(&pkg.name);
+    remove_tree(&work)?;
+    fs::create_dir_all(out_dir).context(out_dir.display())?;
+    let tree = work.join(pkgbuild::TREE_DIR);
+    tree::write(deb, pkg, &tree).context("writing the package files")?;
+    let built = direct::pack(pkg, &tree, out_dir, build_time()).context("writing the package")?;
+    remove_tree(&work)?;
+    Ok(built)
+}
+
+/// Seconds since the epoch, or SOURCE_DATE_EPOCH when set, as makepkg does.
+fn build_time() -> u64 {
+    std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+        })
 }
 
 /// Whether makepkg is on PATH.
