@@ -3,6 +3,7 @@
 mod deps;
 mod desktop;
 mod elf;
+mod fixes;
 mod fs;
 mod pam;
 mod pathutil;
@@ -20,6 +21,24 @@ use crate::model::{Node, NodeKind, Package, Source};
 use crate::version::{ArchVersion, DebVersion};
 
 pub use deps::DepMap;
+pub use fixes::Fixes;
+
+/// The data translation looks things up in: built in, with the user's files on top.
+pub struct Tables {
+    pub depmap: DepMap,
+    pub fixes: Fixes,
+}
+
+impl Tables {
+    pub fn load(config_dir: &Path) -> Result<Tables> {
+        Ok(Tables { depmap: DepMap::load(config_dir)?, fixes: Fixes::load(config_dir)? })
+    }
+
+    #[cfg(test)]
+    pub fn builtin() -> Tables {
+        Tables { depmap: DepMap::builtin(), fixes: Fixes::builtin() }
+    }
+}
 pub use desktop::DesktopCheck;
 pub use scripts::{Action, Command as ScriptCommand, Outcome, describe_action};
 use scripts::PathFact;
@@ -125,10 +144,11 @@ impl std::fmt::Display for Warning {
 
 pub fn translate<R: Read + Seek>(
     deb: &mut Deb<R>,
-    depmap: &DepMap,
+    tables: &Tables,
     pkgrel: u32,
     system: &impl System,
 ) -> Result<Translation> {
+    let depmap = &tables.depmap;
     let control = &deb.control;
     let name = control.require("Package")?.to_string();
     check_pkgname(&name)?;
@@ -245,23 +265,33 @@ pub fn translate<R: Read + Seek>(
     all.extend(warnings.into_iter().map(Warning::Other));
     let warnings = all;
 
+    let mut package = Package {
+        version: ArchVersion::from_debian(&deb_version, pkgrel),
+        deb_version,
+        name,
+        arch: arch.to_string(),
+        description,
+        url,
+        license: "custom".to_string(),
+        depends: deps.depends,
+        optdepends: deps.optdepends,
+        provides: Vec::new(),
+        conflicts: Vec::new(),
+        backup,
+        install_note,
+        nodes,
+    };
+    // Fixes are keyed by the deb's Package name, which per app overrides do not touch.
+    let deb_name = package.name.clone();
+    let fixed = tables.fixes.apply(&deb_name, &mut package)?;
+    if !fixed.is_empty() {
+        changes.extend(fixed);
+        ensure_parents(&mut package.nodes);
+        package.nodes.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+
     Ok(Translation {
-        package: Package {
-            version: ArchVersion::from_debian(&deb_version, pkgrel),
-            deb_version,
-            name,
-            arch: arch.to_string(),
-            description,
-            url,
-            license: "custom".to_string(),
-            depends: deps.depends,
-            optdepends: deps.optdepends,
-            provides: Vec::new(),
-            conflicts: Vec::new(),
-            backup,
-            install_note,
-            nodes,
-        },
+        package,
         changes,
         notes: deps.notes,
         warnings,
@@ -561,10 +591,6 @@ weird-tool --setup
         Deb::from_reader(Cursor::new(bytes)).unwrap()
     }
 
-    fn depmap() -> DepMap {
-        DepMap::builtin()
-    }
-
     /// Knows three libraries and nothing about dependency trees or installed programs.
     struct FakeSystem;
 
@@ -623,7 +649,7 @@ weird-tool --setup
     #[test]
     fn translates_a_full_deb() {
         let mut deb = demo_deb();
-        let t = translate(&mut deb, &depmap(), 1, &FakeSystem).unwrap();
+        let t = translate(&mut deb, &Tables::builtin(), 1, &FakeSystem).unwrap();
         let p = &t.package;
 
         assert_eq!((p.name.as_str(), p.version.to_string().as_str(), p.arch.as_str()), ("demo", "2:1.0~rc1-1", "x86_64"));
@@ -717,7 +743,7 @@ weird-tool --setup
         ];
         for (control, want) in cases {
             let mut deb = Deb::from_reader(Cursor::new(DebBuilder::new(control).build())).unwrap();
-            let err = translate(&mut deb, &depmap(), 1, &BareSystem).err().unwrap().to_string();
+            let err = translate(&mut deb, &Tables::builtin(), 1, &BareSystem).err().unwrap().to_string();
             assert!(err.contains(want), "expected '{want}', got '{err}'");
         }
         let cases = [("amd64", "x86_64"), ("arm64", "aarch64"), ("all", "any")];

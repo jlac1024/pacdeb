@@ -3,12 +3,15 @@
 //! pambase). A Debian `@include common-auth` on Arch fails to load, which breaks
 //! logins for that service.
 
-/// Debian include, and the Arch line that does the same job.
+/// Debian include, and the Arch line that does the same job. Debian's common-session
+/// carries pam_systemd, which gives the session its runtime dir and user bus; on Arch
+/// that lives in system-login. The noninteractive variant leaves pam_systemd out on
+/// purpose, so it stays on system-auth.
 const INCLUDES: [(&str, &str); 5] = [
     ("common-auth", "auth      include   system-auth"),
     ("common-account", "account   include   system-auth"),
     ("common-password", "password  include   system-auth"),
-    ("common-session", "session   include   system-auth"),
+    ("common-session", "session   include   system-login"),
     ("common-session-noninteractive", "session   include   system-auth"),
 ];
 
@@ -38,6 +41,11 @@ pub fn rewrite(text: &str) -> Option<Rewrite> {
                     out.push_str(line);
                 }
             }
+        } else if !trimmed.starts_with('#') && trimmed.contains("pam_selinux.so") {
+            // Arch has no SELinux module; PAM logs a "faulty module" error for every
+            // session that loads one, even when the line tells it to ignore that.
+            changes.push("removed a pam_selinux line (Arch has no SELinux)".to_string());
+            continue;
         } else if trimmed.contains("envfile=/etc/default/locale") {
             // Debian keeps the locale in /etc/default/locale, Arch in /etc/locale.conf;
             // both are KEY=value lines that pam_env reads the same way.
@@ -78,13 +86,12 @@ session required pam_env.so readenv=1 user_readenv=1 envfile=/etc/default/locale
 auth      include   system-auth
 account   include   system-auth
 password  include   system-auth
-session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so close
 session required pam_limits.so
-session   include   system-auth
+session   include   system-login
 session required pam_env.so readenv=1 user_readenv=1 envfile=/etc/locale.conf
 "
         );
-        assert_eq!(r.changes.len(), 5);
+        assert_eq!(r.changes.len(), 6);
         assert!(r.unknown.is_empty());
     }
 

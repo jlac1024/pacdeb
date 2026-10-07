@@ -195,7 +195,7 @@ mod tests {
     use crate::build::tree;
     use crate::deb::Deb;
     use crate::deb::testutil::{DebBuilder, TestEntry};
-    use crate::translate::{self, DepMap};
+    use crate::translate;
     use std::collections::BTreeMap;
     use std::io::Cursor;
 
@@ -227,7 +227,7 @@ mod tests {
         .entry(TestEntry::file("./etc/demo.conf", 0o644, b"x=1\n"))
         .build();
         let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
-        let t = translate::translate(&mut deb, &DepMap::builtin(), 1, &translate::tests::BareSystem).unwrap();
+        let t = translate::translate(&mut deb, &translate::Tables::builtin(), 1, &translate::tests::BareSystem).unwrap();
 
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox/test-direct");
         let _ = fs::remove_dir_all(&base);

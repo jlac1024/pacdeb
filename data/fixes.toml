@@ -1,0 +1,61 @@
+# Known fixes for specific debs, compiled into the binary. Each one was found by
+# installing the converted package on Arch and is applied whenever Ferry converts a
+# deb with that Package name. Users can add or override entries in
+# ~/.config/ferry/fixes.toml.
+#
+# Per package:
+#   optdepends       extra "package: reason" entries
+#   install_note     lines pacman shows after a fresh install
+#   replace_note     true: install_note replaces the note Ferry derives from the
+#                    deb's service commands instead of adding to it
+#   [[<pkg>.files]]  files to add, or to replace when the deb ships them:
+#                    path, content, mode (octal string, default "644"), why
+
+[chrome-remote-desktop]
+replace_note = true
+install_note = [
+    "To set up remote access, open https://remotedesktop.google.com/headless,",
+    "authorize this computer and run the command it shows (as yourself, not root).",
+    "That command enables chrome-remote-desktop@<you>.service for you.",
+    "",
+    "Remote sessions are a separate X11 desktop, not the screen you are using.",
+    "Give them an X11 desktop you do not log into locally (for example cinnamon or",
+    "xfce4): a second session of the same desktop for the same user conflicts with",
+    "the first. Live screen sharing exists only on GNOME 49+ with GDM.",
+]
+
+[[chrome-remote-desktop.files]]
+path = "/usr/lib/systemd/system/chrome-remote-desktop@.service.d/10-ferry.conf"
+why = "Arch's Xorg wrapper only lets console users start X, so the remote display runs on Xvfb"
+content = """
+# Added by Ferry: Arch's Xorg goes through Xorg.wrap, which refuses non-console users,
+# so Chrome Remote Desktop's Xorg + dummy display cannot start. Xvfb works.
+[Service]
+Environment=CHROME_REMOTE_DESKTOP_USE_XVFB=1
+"""
+
+[[chrome-remote-desktop.files]]
+path = "/opt/google/chrome-remote-desktop/Xsession"
+mode = "755"
+why = "the original hands off to Debian's /etc/X11/Xsession, which Arch does not have"
+content = """
+#!/bin/bash
+# Replaced by Ferry. The Debian version runs /etc/X11/Xsession, which Arch does not
+# have. This starts the session the chooser picked, or for "default" the user's
+# ~/.xsession or the first installed X11 desktop.
+if [ -n "$1" ] && [ "$1" != "default" ]; then
+    exec /bin/sh -c "$1"
+fi
+if [ -x "$HOME/.xsession" ]; then
+    exec "$HOME/.xsession"
+fi
+for f in /usr/share/xsessions/*.desktop; do
+    [ -e "$f" ] || continue
+    cmd=$(sed -n 's/^Exec=//p' "$f" | head -n 1)
+    if [ -n "$cmd" ]; then
+        exec /bin/sh -c "$cmd"
+    fi
+done
+echo "No X11 desktop session is installed. On KDE Plasma: sudo pacman -S plasma-x11-session" >&2
+exit 1
+"""

@@ -11,24 +11,24 @@ pub struct Note {
 }
 
 pub fn note(cmds: &[Command], nodes: &[Node]) -> Note {
-    // unit, user, enable, start: in first-seen order
-    let mut units: Vec<(String, bool, bool, bool)> = Vec::new();
+    // unit, user, enable, start, start-if-enabled: in first-seen order
+    let mut units: Vec<(String, bool, bool, bool, bool)> = Vec::new();
     for c in cmds {
         let Outcome::Service(steps) = &c.outcome else {
             continue;
         };
         for ServiceStep { verb, unit, user } in steps {
-            let i = match units.iter().position(|(u, usr, _, _)| u == unit && usr == user) {
+            let i = match units.iter().position(|(u, usr, ..)| u == unit && usr == user) {
                 Some(i) => i,
                 None => {
-                    units.push((unit.clone(), *user, false, false));
+                    units.push((unit.clone(), *user, false, false, false));
                     units.len() - 1
                 }
             };
-            if verb == "enable" {
-                units[i].2 = true;
-            } else {
-                units[i].3 = true;
+            match verb.as_str() {
+                "enable" => units[i].2 = true,
+                "start-if-enabled" => units[i].4 = true,
+                _ => units[i].3 = true,
             }
         }
     }
@@ -36,7 +36,12 @@ pub fn note(cmds: &[Command], nodes: &[Node]) -> Note {
     let mut warnings = Vec::new();
     let mut system = Vec::new();
     let mut user = Vec::new();
-    for (unit, is_user, enable, start) in units {
+    for (unit, is_user, enable, start, start_if_enabled) in units {
+        // Debian only starts what it enabled through deb-systemd-invoke.
+        let start = start || (start_if_enabled && enable);
+        if !enable && !start {
+            continue;
+        }
         let dir = if is_user { "/usr/lib/systemd/user/" } else { "/usr/lib/systemd/system/" };
         if !nodes.iter().any(|n| n.path == format!("{dir}{unit}")) {
             warnings.push(format!("the scripts enable or start {unit}, which the package does not ship in {dir}"));
@@ -112,6 +117,19 @@ mod tests {
         );
         assert_eq!(n.warnings.len(), 1);
         assert!(n.warnings[0].contains("other.service"));
+    }
+
+    #[test]
+    fn debhelper_start_needs_an_enable() {
+        let nodes = [unit("/usr/lib/systemd/system/a.service"), unit("/usr/lib/systemd/system/b.service")];
+        let cmds = [
+            cmd(&[("start-if-enabled", "a.service", false)]),
+            cmd(&[("enable", "b.service", false)]),
+            cmd(&[("start-if-enabled", "b.service", false)]),
+        ];
+        let n = note(&cmds, &nodes);
+        assert!(!n.lines.iter().any(|l| l.contains("a.service")), "{:?}", n.lines);
+        assert!(n.lines.iter().any(|l| l == "  sudo systemctl enable --now b.service"), "{:?}", n.lines);
     }
 
     #[test]
