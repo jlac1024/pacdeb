@@ -40,6 +40,15 @@ pub enum Outcome {
     Unknown(String),
 }
 
+/// What a path is once the package is installed, as far as the package can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathFact {
+    Missing,
+    File { exec: bool, empty: bool },
+    Dir,
+    Symlink,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
     pub script: String,
@@ -77,9 +86,9 @@ const NEUTRAL: [&str; 23] = [
 
 const MAX_CALL_DEPTH: usize = 8;
 
-/// `exists` answers whether a path exists once the package is installed: Some when the
-/// package decides it, None when it depends on the rest of the system.
-pub fn analyze(script: &str, text: &str, exists: &dyn Fn(&str) -> Option<bool>) -> Vec<Command> {
+/// `facts` says what a path is once the package is installed: Some when the package
+/// decides it, None when it depends on the rest of the system.
+pub fn analyze(script: &str, text: &str, facts: &dyn Fn(&str) -> Option<PathFact>) -> Vec<Command> {
     // What dpkg passes as $1 on a fresh install or a removal. DPKG_ROOT is only set for
     // installs into another root.
     let action = match script {
@@ -96,7 +105,7 @@ pub fn analyze(script: &str, text: &str, exists: &dyn Fn(&str) -> Option<bool>) 
         stopped: false,
         returned: false,
         depth: 0,
-        exists,
+        facts,
         out: Vec::new(),
     };
     a.run_lines(&logical_lines(text));
@@ -186,7 +195,7 @@ struct Analyzer<'a> {
     stopped: bool,
     returned: bool,
     depth: usize,
-    exists: &'a dyn Fn(&str) -> Option<bool>,
+    facts: &'a dyn Fn(&str) -> Option<PathFact>,
     out: Vec<Command>,
 }
 
@@ -381,9 +390,20 @@ impl Analyzer<'_> {
                 if unresolved(path) || !path.starts_with('/') {
                     return Tri::Maybe;
                 }
-                match (self.exists)(&resolve("/", path)) {
-                    Some(b) => Tri::of(b),
-                    None => Tri::Maybe,
+                let Some(fact) = (self.facts)(&resolve("/", path)) else {
+                    return Tri::Maybe;
+                };
+                use PathFact::*;
+                // A symlink's target type is not known here, so type tests on one stay open.
+                match (*op, fact) {
+                    (_, Missing) => Tri::No,
+                    ("-L" | "-h", f) => Tri::of(f == Symlink),
+                    (_, Symlink) if *op != "-e" && *op != "-r" && *op != "-w" => Tri::Maybe,
+                    ("-f", f) => Tri::of(matches!(f, File { .. })),
+                    ("-d", f) => Tri::of(f == Dir),
+                    ("-x", File { exec, .. }) => Tri::of(exec),
+                    ("-s", File { empty, .. }) => Tri::of(!empty),
+                    _ => Tri::Yes,
                 }
             }
             ["-z", s] if !unresolved(s) => Tri::of(s.is_empty()),
@@ -469,7 +489,11 @@ impl Analyzer<'_> {
             },
         };
         let mut text = std::iter::once(first.to_string()).chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
-        for r in &cmd.redirects {
+        if let Some((head, rest)) = text.split_once('\n') {
+            // A quoted multi line argument: the first line is enough to recognize it.
+            text = format!("{} ... ({} more lines)", head.trim_end(), rest.lines().count());
+        }
+        for r in cmd.redirects.iter().filter(|r| !is_harmless_redirect(r)) {
             text.push_str(&format!(" > {r}"));
         }
         if let Some(h) = &line.heredoc {
@@ -569,9 +593,10 @@ fn is_harmless_redirect(target: &str) -> bool {
     target == "/dev/null" || target == "-" || target.chars().all(|c| c.is_ascii_digit())
 }
 
-/// A literal absolute path, normalized. None when it still holds expansions or globs.
+/// A literal absolute path, normalized. None when it still holds expansions, globs or
+/// brace patterns like `crashpad.{a,b}`.
 fn literal_path(s: &str) -> Option<String> {
-    (s.starts_with('/') && !s.contains(['$', '`', '*', '?', '['])).then(|| resolve("/", s))
+    (s.starts_with('/') && !s.contains(['$', '`', '*', '?', '[', '{'])).then(|| resolve("/", s))
 }
 
 fn literal_paths(paths: &[&String]) -> Option<Vec<String>> {
@@ -908,11 +933,20 @@ fn logical_lines(text: &str) -> Vec<Line> {
         let number = i + 1;
         let mut s = raw[i].to_string();
         i += 1;
-        while s.ends_with('\\') && i < raw.len() {
-            s.pop();
-            s.push(' ');
-            s.push_str(raw[i].trim_start());
-            i += 1;
+        loop {
+            if s.ends_with('\\') && i < raw.len() {
+                s.pop();
+                s.push(' ');
+                s.push_str(raw[i].trim_start());
+                i += 1;
+            } else if unclosed_quote(&s) && i < raw.len() {
+                // A quoted string that spans lines, like a multi line message.
+                s.push('\n');
+                s.push_str(raw[i]);
+                i += 1;
+            } else {
+                break;
+            }
         }
         let mut heredoc = None;
         if let Some((delim, quoted, strip_tabs)) = heredoc_delimiter(&s) {
@@ -931,6 +965,33 @@ fn logical_lines(text: &str) -> Vec<Line> {
         out.push(Line { number, text: s, heredoc });
     }
     out
+}
+
+/// Whether a line ends inside a single or double quoted string.
+fn unclosed_quote(s: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut chars = s.chars().peekable();
+    let mut word_start = true;
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') if c == '\'' => quote = None,
+            Some('"') if c == '\\' => {
+                chars.next();
+            }
+            Some('"') if c == '"' => quote = None,
+            Some(_) => {}
+            None => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' | '"' => quote = Some(c),
+                '#' if word_start => return false,
+                _ => {}
+            },
+        }
+        word_start = c.is_whitespace() || c == ';';
+    }
+    quote.is_some()
 }
 
 /// Finds `<<WORD`, `<<'WORD'` or `<<-WORD`: (delimiter, quoted, strip leading tabs).
@@ -1290,15 +1351,14 @@ fn dirname_of(inner: &str, vars: &HashMap<String, String>) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn package_paths() -> impl Fn(&str) -> Option<bool> {
-        |p: &str| {
-            if ["/opt/App/chrome-sandbox", "/opt/App/app", "/usr/lib/app/resources/x.xml"].contains(&p) {
-                Some(true)
-            } else if p.starts_with("/opt/App/") || p.starts_with("/usr/lib/app/") {
-                Some(false)
-            } else {
-                None
-            }
+    fn package_paths() -> impl Fn(&str) -> Option<PathFact> {
+        |p: &str| match p {
+            "/opt/App/chrome-sandbox" | "/opt/App/app" => Some(PathFact::File { exec: true, empty: false }),
+            "/usr/lib/app/resources/x.xml" => Some(PathFact::File { exec: false, empty: false }),
+            "/opt/App" | "/opt/App/data" => Some(PathFact::Dir),
+            "/opt/App/link" => Some(PathFact::Symlink),
+            _ if p.starts_with("/opt/App/") || p.starts_with("/usr/lib/app/") => Some(PathFact::Missing),
+            _ => None,
         }
     }
 
@@ -1518,6 +1578,39 @@ one_liner
         assert_eq!(cmds[0].redirects, ["/etc/f", "/var/log/y", "in", "/dev/null"]);
         let seps: Vec<Sep> = split_commands(tokenize("a && b || c; d", &vars)).iter().map(|c| c.sep).collect();
         assert_eq!(seps, [Sep::And, Sep::Or, Sep::Semi, Sep::End]);
+    }
+
+    #[test]
+    fn path_tests_respect_file_types() {
+        let cases = [
+            ("[ -f /opt/App ]", "skipped"),
+            ("[ -d /opt/App ]", "actions"),
+            ("[ -d /opt/App/app ]", "skipped"),
+            ("[ -x /usr/lib/app/resources/x.xml ]", "skipped"),
+            ("[ -x /opt/App/app ]", "actions"),
+            ("[ -L /opt/App/link ]", "actions"),
+            ("[ -f /opt/App/link ]", "conditional"),
+            ("[ -e /opt/App/link ]", "actions"),
+            ("[ -e /opt/App/nope ]", "skipped"),
+        ];
+        for (test, want) in cases {
+            let got = run("postinst", &format!("if {test}; then ln -s /opt/App/app /usr/bin/app; fi\n"));
+            assert_eq!(got.len(), 1, "{test}: {got:?}");
+            assert_eq!(kind(&got[0].2), want, "{test}");
+        }
+    }
+
+    #[test]
+    fn joins_multi_line_strings_and_refuses_brace_paths() {
+        let script = "MSG=\"\nName: Please log out\nPriority: Medium\n\"\nrm -rf /var/lib/app/crash.{a,b}\n";
+        let got = run("postrm", script);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, 5);
+        assert_eq!(kind(&got[0].2), "unknown");
+        let cases = [("a \"b", true), ("a \"b\"", false), ("it's", true), ("echo # it's", false), ("x='a\"b'", false), ("\"a\\\"b", true)];
+        for (input, want) in cases {
+            assert_eq!(unclosed_quote(input), want, "{input:?}");
+        }
     }
 
     #[test]

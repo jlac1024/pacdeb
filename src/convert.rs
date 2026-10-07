@@ -327,10 +327,9 @@ mod tests {
             "    -> nothing, a pacman hook updates the MIME database\n",
             "  postinst line 4: frobnicate\n    -> NOT TRANSLATED: no translation for this command\n",
             "Libraries the binaries load:\n  no dynamically linked binaries found\n",
-            "\n3 warnings\n",
+            "\n2 warnings\n",
             "  Script lines Ferry could not translate (check them by hand):\n    postinst:4  frobnicate\n                no translation for this command\n",
             "  Dependencies with no Arch name, left out (map them in depmap.toml if needed):\n    libodd1  (Depends)\n",
-            "  Other:\n    no .desktop file in /usr/share/applications",
         ] {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }

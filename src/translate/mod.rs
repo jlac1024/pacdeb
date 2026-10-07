@@ -20,6 +20,7 @@ use crate::version::{ArchVersion, DebVersion};
 pub use deps::DepMap;
 pub use desktop::DesktopCheck;
 pub use scripts::{Action, Command as ScriptCommand, Outcome, describe_action};
+use scripts::PathFact;
 pub use soname::{Closure, Lookup, SonameReport};
 
 /// Text files bigger than this are not read for checks; real desktop files and cron
@@ -262,27 +263,51 @@ fn check_pkgname(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Answers path tests in scripts from the package: paths it ships exist, and paths
-/// inside the app's own directories that it does not ship do not. Everything else
-/// depends on the system.
-fn package_facts<'a>(nodes: &'a [Node], map: &'a fs::PathMap, name: &str) -> impl Fn(&str) -> Option<bool> + 'a {
-    let paths: HashSet<&str> = nodes.iter().map(|n| n.path.as_str()).collect();
-    let own = [format!("/usr/lib/{name}"), format!("/usr/share/{name}")];
-    let private: Vec<String> = nodes
+/// Answers path tests in scripts from the package: paths it ships are what the package
+/// says, and paths inside the app's own directories that it does not ship are missing.
+/// Everything else depends on the system.
+fn package_facts<'a>(nodes: &'a [Node], map: &'a fs::PathMap, name: &str) -> impl Fn(&str) -> Option<PathFact> + 'a {
+    let facts: HashMap<&str, PathFact> = nodes
         .iter()
-        .filter(|n| n.is_dir() && (own.contains(&n.path) || pathutil::parent(&n.path) == "/opt"))
-        .map(|n| n.path.clone())
+        .map(|n| {
+            let fact = match &n.kind {
+                NodeKind::Dir => PathFact::Dir,
+                NodeKind::Symlink(_) => PathFact::Symlink,
+                NodeKind::File | NodeKind::Hardlink(_) => {
+                    PathFact::File { exec: n.mode & 0o111 != 0, empty: n.kind == NodeKind::File && n.size == 0 }
+                }
+            };
+            (n.path.as_str(), fact)
+        })
         .collect();
+    let private = private_dirs(nodes, name);
     move |p: &str| {
         let p = map.apply(p);
-        if paths.contains(p.as_str()) {
-            Some(true)
-        } else if private.iter().any(|dir| pathutil::is_under(&p, dir)) {
-            Some(false)
-        } else {
-            None
+        match facts.get(p.as_str()) {
+            Some(f) => Some(*f),
+            None if private.iter().any(|dir| pathutil::is_under(&p, dir)) => Some(PathFact::Missing),
+            None => None,
         }
     }
+}
+
+/// Directories that belong to this app alone: ones named after the package, and app
+/// folders under /opt. A vendor folder such as /opt/google that holds only one folder is
+/// shared with the vendor's other apps, so the folder inside it counts instead.
+fn private_dirs(nodes: &[Node], name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for n in nodes.iter().filter(|n| n.is_dir()) {
+        if pathutil::basename(&n.path) == name {
+            out.push(n.path.clone());
+        } else if pathutil::parent(&n.path) == "/opt" {
+            let kids: Vec<&Node> = nodes.iter().filter(|k| pathutil::parent(&k.path) == n.path).collect();
+            match kids.as_slice() {
+                [only] if only.is_dir() => out.push(only.path.clone()),
+                _ => out.push(n.path.clone()),
+            }
+        }
+    }
+    out
 }
 
 fn apply_actions(
