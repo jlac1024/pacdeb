@@ -9,7 +9,7 @@ mod jsonpath;
 
 use std::path::Path;
 
-use crate::error::{Error, Result, bail};
+use crate::error::{Result, bail};
 use crate::net::{self, Checksum, Head};
 use crate::registry::SourceConfig;
 
@@ -65,11 +65,11 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
                 url_json: uj.as_deref(),
                 checksum_json: cj.as_deref(),
             };
-            direct::from_feed(&text, &spec).map_err(|e| Error::new(format!("{app}: {e}")))
+            direct::from_feed(&text, &spec)
         }
         SourceConfig::Apt { repo, suite, component, package, arch, key } => {
             let Some(key) = key else {
-                bail!("{app}'s apt source has no signing key; add one with 'pacdeb set {app} --key <file>'");
+                bail!("the apt source has no signing key; add one with 'pacdeb set {app} --key-url <url>' or '--key <file>'");
             };
             let key = config_dir.join(key);
             let home = cache_dir.join("gnupg").join(app);
@@ -78,12 +78,13 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
             let release = match net::get_bytes(&format!("{dists}/InRelease"), &[]) {
                 Ok(signed) => gpg::verify_clearsigned(&signed, &key, &home)?,
                 // Older repositories sign Release separately.
-                Err(_) => {
+                Err(e) if net::not_found(&e) => {
                     let data = net::get_bytes(&format!("{dists}/Release"), &[])?;
                     let sig = net::get_bytes(&format!("{dists}/Release.gpg"), &[])?;
                     gpg::verify_detached(&data, &sig, &key, &home)?;
                     data
                 }
+                Err(e) => return Err(e),
             };
             let release = String::from_utf8_lossy(&release);
             let arch = arch.as_deref().unwrap_or(host_arch());
@@ -108,8 +109,13 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
             if let Some(a) = &auth {
                 headers.push(("Authorization", a));
             }
-            let json = net::get_text(&format!("https://api.github.com/repos/{repo}/releases?per_page=20"), &headers)?;
-            github::pick(&json, asset, *prerelease).map_err(|e| Error::new(format!("{app}: {e}")))
+            let json = match net::get_text(&format!("https://api.github.com/repos/{repo}/releases?per_page=20"), &headers) {
+                Err(e) if net::not_found(&e) => bail!(
+                    "GitHub has no repository {repo}; check --repo (owner/name), or set PACDEB_GITHUB_TOKEN if it is private"
+                ),
+                other => other?,
+            };
+            github::pick(&json, asset, *prerelease)
         }
         SourceConfig::Manual {} => Ok(Latest::default()),
     }

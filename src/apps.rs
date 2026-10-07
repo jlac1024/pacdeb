@@ -375,7 +375,7 @@ pub fn remove(name: &str) -> Result<()> {
     let paths = Paths::from_env()?;
     let mut config = Config::load(&paths.config)?;
     let Some(app) = config.apps.remove(name) else {
-        bail!("{name} is not tracked");
+        bail!("{name} is not tracked; 'pacdeb list' shows the tracked apps");
     };
     config.save(&paths.config)?;
     let mut state = State::load(&paths.state)?;
@@ -473,7 +473,7 @@ pub fn check(name: Option<&str>) -> Result<()> {
     let config = Config::load(&paths.config)?;
     let state = State::load(&paths.state)?;
     let names: Vec<&String> = match name {
-        Some(n) => vec![config.apps.get_key_value(n).map(|(k, _)| k).ok_or_else(|| crate::error::Error::new(format!("{n} is not tracked")))?],
+        Some(n) => vec![config.apps.get_key_value(n).map(|(k, _)| k).ok_or_else(|| crate::error::Error::new(format!("{n} is not tracked; 'pacdeb list' shows the tracked apps")))?],
         None => config.apps.keys().collect(),
     };
     if names.is_empty() {
@@ -482,7 +482,8 @@ pub fn check(name: Option<&str>) -> Result<()> {
     }
     let st = Style::for_stdout();
     let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
-    let mut failed = false;
+    let total = names.len();
+    let mut failed = 0;
     for n in names {
         let app = &config.apps[n];
         let channel = config.channel(app);
@@ -490,7 +491,7 @@ pub fn check(name: Option<&str>) -> Result<()> {
         let shown_channel = channel.as_deref().filter(|_| app.source.uses_channel()).map(|c| format!(" [{c}]")).unwrap_or_default();
         match sources::latest(n, &app.source, channel.as_deref(), &paths.config, &paths.cache) {
             Err(e) => {
-                failed = true;
+                failed += 1;
                 println!("{label}  {} {e}", st.bad("error:"));
             }
             Ok(latest) => match status(&latest, state.apps.get(n)) {
@@ -507,8 +508,11 @@ pub fn check(name: Option<&str>) -> Result<()> {
             },
         }
     }
-    if failed {
-        bail!("some apps could not be checked");
+    if failed > 0 {
+        match total {
+            1 => bail!("the check failed"),
+            _ => bail!("{failed} of {total} apps could not be checked"),
+        }
     }
     Ok(())
 }

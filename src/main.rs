@@ -5,6 +5,7 @@ mod deb;
 mod apps;
 mod build;
 mod error;
+mod help;
 mod human;
 mod inspect;
 mod install;
