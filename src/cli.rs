@@ -14,13 +14,24 @@ Commands:
                                      Build a pacman package without installing it;
                                      --dry-run prints what would be built
   install <file.deb|name> [--direct] Convert and install with sudo pacman -U
-  add <name> --source <direct|apt|github|manual> ...
-                                     Register an app for updates
-  list                               Show registered apps and their versions
+  add <name> [--preset <p> | --source <direct|apt|github|manual>] [options]
+                                     Track an app for updates (known apps have presets)
+  set <name> [options]               Change a tracked app, for example its --channel
+  set --channel <name>               Set the global channel ('' clears it)
+  list                               Show tracked apps and their versions
   check [name]                       Report available updates, download nothing
   update [name] [--file <file.deb>] [--direct] [--no-install]
                                      Fetch, convert and install anything newer
   remove <name>                      Stop tracking an app (does not uninstall)
+
+Options for add and set:
+  --channel <c>  --pkgname <n>  --provides a,b  --conflicts a,b
+  --depends a,b (extra)  --no-depends a,b (dropped)
+  direct: --url <u> (may use {version})  --feed <u>  --version-json <path>
+          --version-pattern <app_{version}.deb>  --url-json <path>  --checksum-json <path>
+  apt:    --repo <u>  --suite <s>  --component <c>  --package <p>  --arch <a>  --key <file>
+  github: --repo <owner/name>  --asset <pattern>  --prerelease
+  Values may use {channel}.
 
 Options:
   -h, --help                         Show this help
@@ -32,7 +43,7 @@ Environment:
   FERRY_GITHUB_TOKEN  Token for GitHub API requests
 ";
 
-const UNFINISHED: &[&str] = &["add", "list", "check", "update", "remove"];
+const UNFINISHED: &[&str] = &["update"];
 
 pub fn run(args: &[String]) -> ExitCode {
     let Some(first) = args.first() else {
@@ -52,6 +63,28 @@ pub fn run(args: &[String]) -> ExitCode {
         "inspect" => inspect(&args[1..]),
         "convert" => convert(&args[1..]),
         "install" => install(&args[1..]),
+        "add" => registry_cmd(&args[1..], "usage: ferry add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
+            [name] => crate::apps::add(name, f),
+            _ => Err(crate::error::Error::new("usage: ferry add <name> [--preset <p> | --source <type>] [options]")),
+        }),
+        "set" => registry_cmd(&args[1..], "usage: ferry set <name> [options], or ferry set --channel <name>", |pos, f| match pos {
+            [] => crate::apps::set(None, f),
+            [name] => crate::apps::set(Some(name), f),
+            _ => Err(crate::error::Error::new("usage: ferry set <name> [options], or ferry set --channel <name>")),
+        }),
+        "list" => match &args[1..] {
+            [] => finish(crate::apps::list()),
+            _ => usage_error("usage: ferry list"),
+        },
+        "remove" => match &args[1..] {
+            [name] if !name.starts_with('-') => finish(crate::apps::remove(name)),
+            _ => usage_error("usage: ferry remove <name>"),
+        },
+        "check" => match &args[1..] {
+            [] => finish(crate::apps::check(None)),
+            [name] if !name.starts_with('-') => finish(crate::apps::check(Some(name))),
+            _ => usage_error("usage: ferry check [name]"),
+        },
         cmd if UNFINISHED.contains(&cmd) => {
             eprintln!("ferry: '{cmd}' is not implemented yet");
             ExitCode::FAILURE
@@ -123,6 +156,14 @@ fn install(args: &[String]) -> ExitCode {
         println!("{} {}", crate::style::Style::for_stdout().good("Built"), pkg.display());
         crate::install::install(&pkg)
     }))
+}
+
+/// Parses add/set style arguments and runs the command with them.
+fn registry_cmd(args: &[String], usage: &str, run: impl FnOnce(&[String], &crate::apps::Flags) -> Result<()>) -> ExitCode {
+    match crate::apps::parse_flags(args) {
+        Ok((pos, flags)) => finish(run(&pos, &flags)),
+        Err(e) => usage_error(&format!("{e}. {usage}")),
+    }
 }
 
 fn usage_error(msg: &str) -> ExitCode {
