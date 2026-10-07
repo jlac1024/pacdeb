@@ -28,10 +28,23 @@ pub struct DataEntry {
 }
 
 pub fn list<R: Read>(r: R) -> Result<Vec<DataEntry>> {
-    let mut archive = tar::Archive::new(r);
     let mut out = Vec::new();
+    scan(r, |e, _| {
+        out.push(e.clone());
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Walks the data tar once, calling `visit` with each entry and a reader for its
+/// contents. Contents the visitor does not read are skipped.
+pub fn scan<R: Read>(
+    r: R,
+    mut visit: impl FnMut(&DataEntry, &mut dyn Read) -> Result<()>,
+) -> Result<()> {
+    let mut archive = tar::Archive::new(r);
     for entry in archive.entries().context("reading data archive")? {
-        let entry = entry.context("reading data archive")?;
+        let mut entry = entry.context("reading data archive")?;
         let Some(path) = normalize_path(&entry.path_bytes())? else {
             continue;
         };
@@ -49,7 +62,7 @@ pub fn list<R: Read>(r: R) -> Result<Vec<DataEntry>> {
             (EntryKind::Symlink | EntryKind::Hardlink, None) => bail!("{path}: link has no target"),
             _ => None,
         };
-        out.push(DataEntry {
+        let data_entry = DataEntry {
             kind,
             mode: header.mode().context(&path)? & 0o7777,
             size: entry.size(),
@@ -57,9 +70,10 @@ pub fn list<R: Read>(r: R) -> Result<Vec<DataEntry>> {
             gid: header.gid().context(&path)?,
             link,
             path,
-        });
+        };
+        visit(&data_entry, &mut entry).context(&data_entry.path)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Turns an archive path like "./usr/bin/" into "/usr/bin". Returns None for the root.

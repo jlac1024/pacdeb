@@ -111,6 +111,14 @@ impl<R: Read + Seek> Deb<R> {
         let reader = self.data_reader()?;
         data::list(reader)
     }
+
+    pub fn scan_data(
+        &mut self,
+        visit: impl FnMut(&DataEntry, &mut dyn Read) -> Result<()>,
+    ) -> Result<()> {
+        let reader = self.data_reader()?;
+        data::scan(reader, visit)
+    }
 }
 
 fn check_format(raw: &[u8]) -> Result<()> {

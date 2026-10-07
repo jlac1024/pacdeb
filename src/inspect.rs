@@ -8,6 +8,7 @@ use std::path::Path;
 use crate::control::Control;
 use crate::deb::{DataEntry, Deb, EntryKind, MAINTAINER_SCRIPTS};
 use crate::error::{Context, Result};
+use crate::human;
 use crate::relation::{RELATION_FIELDS, format_group, parse_relations};
 use crate::version::{ArchVersion, DebVersion};
 
@@ -109,17 +110,17 @@ fn files_section(out: &mut String, entries: &[DataEntry]) {
     let total: u64 = entries.iter().filter(|e| e.kind == EntryKind::File).map(|e| e.size).sum();
 
     let mut summary = vec![
-        plural(count(EntryKind::File), "file", "files"),
-        plural(count(EntryKind::Dir), "directory", "directories"),
-        plural(count(EntryKind::Symlink), "symlink", "symlinks"),
+        human::plural(count(EntryKind::File), "file", "files"),
+        human::plural(count(EntryKind::Dir), "directory", "directories"),
+        human::plural(count(EntryKind::Symlink), "symlink", "symlinks"),
     ];
     if count(EntryKind::Hardlink) > 0 {
-        summary.push(plural(count(EntryKind::Hardlink), "hardlink", "hardlinks"));
+        summary.push(human::plural(count(EntryKind::Hardlink), "hardlink", "hardlinks"));
     }
     if others > 0 {
-        summary.push(plural(others, "special file", "special files"));
+        summary.push(human::plural(others, "special file", "special files"));
     }
-    writeln!(out, "\nFiles: {}, {}", summary.join(", "), human_size(total)).unwrap();
+    writeln!(out, "\nFiles: {}, {}", summary.join(", "), human::size(total)).unwrap();
 
     let mut groups: BTreeMap<String, (usize, u64)> = BTreeMap::new();
     for e in entries.iter().filter(|e| e.kind != EntryKind::Dir) {
@@ -130,7 +131,7 @@ fn files_section(out: &mut String, entries: &[DataEntry]) {
     let width = groups.keys().map(String::len).max().unwrap_or(0) + 2;
     for (key, (n, size)) in &groups {
         let label = if *n == 1 { "entry" } else { "entries" };
-        writeln!(out, "  {key:<width$}{n:>6} {label:<7}  {:>10}", human_size(*size)).unwrap();
+        writeln!(out, "  {key:<width$}{n:>6} {label:<7}  {:>10}", human::size(*size)).unwrap();
     }
 
     let not_dir = |e: &&DataEntry| e.kind != EntryKind::Dir;
@@ -179,7 +180,7 @@ fn scripts_section(out: &mut String, files: &BTreeMap<String, Vec<u8>>) {
         };
         any = true;
         let text = String::from_utf8_lossy(body);
-        writeln!(out, "  {name} ({})", plural(text.lines().count(), "line", "lines")).unwrap();
+        writeln!(out, "  {name} ({})", human::plural(text.lines().count(), "line", "lines")).unwrap();
         for l in text.lines() {
             writeln!(out, "{}", format!("    | {l}").trim_end()).unwrap();
         }
@@ -223,46 +224,11 @@ fn group_key(path: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
-
-fn human_size(n: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
-    let mut v = n as f64;
-    let mut unit = 0;
-    while v >= 1024.0 && unit < UNITS.len() - 1 {
-        v /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{n} B")
-    } else {
-        format!("{v:.1} {}", UNITS[unit])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::deb::testutil::{DebBuilder, TestEntry};
     use std::io::Cursor;
-
-    #[test]
-    fn sizes() {
-        let cases = [
-            (0, "0 B"),
-            (1023, "1023 B"),
-            (1024, "1.0 KiB"),
-            (1536, "1.5 KiB"),
-            (5 << 20, "5.0 MiB"),
-            (3 << 30, "3.0 GiB"),
-            (5 << 40, "5120.0 GiB"),
-        ];
-        for (n, want) in cases {
-            assert_eq!(human_size(n), want, "{n}");
-        }
-    }
 
     #[test]
     fn group_keys() {
