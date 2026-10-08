@@ -5,7 +5,7 @@
 #   cd packaging && makepkg -f && sudo pacman -U pacdeb-*.pkg.tar.zst
 
 pkgname=pacdeb
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Install Debian .deb packages as pacman packages and keep them updated, like apt"
 arch=('x86_64' 'aarch64')
