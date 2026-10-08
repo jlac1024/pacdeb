@@ -203,3 +203,6 @@
 # Packages that only install a vendor's apt key; pacdeb keeps the key itself.
 "brave-keyring" = ""
 "element-io-archive-keyring" = ""
+# Introspection data for the old libgnome-keyring, which Arch no longer has; apps fall
+# back to libsecret. Debian packages only suggest it.
+"gir1.2-gnomekeyring-1.0" = ""
