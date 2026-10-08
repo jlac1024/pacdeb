@@ -20,6 +20,7 @@ pub mod model;
 pub mod net;
 pub mod notify;
 pub mod paths;
+pub mod progress;
 pub mod registry;
 pub mod relation;
 pub mod repo;

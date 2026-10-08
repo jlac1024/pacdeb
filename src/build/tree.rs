@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::deb::{Deb, EntryKind};
 use crate::error::{Context, Result, bail};
 use crate::model::{NodeKind, Package, Source};
+use crate::progress::{Counting, Progress};
 
 /// Builds the tree under `root`, which must not exist yet. Files keep their modes,
 /// setuid included; ownership is left to the backend, which makes everything root.
@@ -33,6 +34,8 @@ pub fn write<R: Read + Seek>(deb: &mut Deb<R>, pkg: &Package, root: &Path) -> Re
         }
     }
 
+    let total: u64 = pkg.nodes.iter().filter(|n| n.kind == NodeKind::File && matches!(n.source, Source::Deb(_))).map(|n| n.size).sum();
+    let mut progress = Progress::new(format!("Unpacking {}", pkg.name), Some(total));
     let mut written = 0;
     deb.scan_data(|e, r| {
         if e.kind != EntryKind::File {
@@ -43,9 +46,10 @@ pub fn write<R: Read + Seek>(deb: &mut Deb<R>, pkg: &Package, root: &Path) -> Re
         };
         let first = at(targets[0]);
         let mut out = File::create(&first).context(first.display())?;
-        io::copy(r, &mut out).context(first.display())?;
+        io::copy(&mut Counting { inner: r, progress: &mut progress }, &mut out).context(first.display())?;
         for t in &targets[1..] {
-            fs::copy(&first, at(t)).context(t)?;
+            let copied = fs::copy(&first, at(t)).context(t)?;
+            progress.add(copied);
         }
         written += targets.len();
         Ok(())
@@ -54,6 +58,7 @@ pub fn write<R: Read + Seek>(deb: &mut Deb<R>, pkg: &Package, root: &Path) -> Re
     if written != expected {
         bail!("the deb is missing {} of the files the package needs", expected - written);
     }
+    progress.finish();
 
     for n in &pkg.nodes {
         match &n.kind {

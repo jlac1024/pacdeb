@@ -53,13 +53,16 @@ pub struct LiveLookup {
 }
 
 impl LiveLookup {
-    /// With the local repository named in pacdeb's settings, if one is set up.
+    /// With the local repository named in pacdeb's settings, or its usual name: a
+    /// [pacdeb] repository in pacman.conf holds pacdeb's builds even when the settings
+    /// no longer say so.
     pub fn new() -> LiveLookup {
         let own_repo = crate::paths::Paths::from_env()
             .and_then(|p| crate::registry::Config::load(&p.config))
             .ok()
-            .and_then(|c| c.settings.repo.map(|r| r.name));
-        LiveLookup { own_repo }
+            .and_then(|c| c.settings.repo.map(|r| r.name))
+            .unwrap_or_else(|| "pacdeb".to_string());
+        LiveLookup { own_repo: Some(own_repo) }
     }
 }
 

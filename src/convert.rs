@@ -135,7 +135,10 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
     let paths = Paths::from_env()?;
     let tables = Tables::load(&paths.config)?;
     let mut deb = Deb::open(deb_path)?;
+    let file = deb_path.file_name().map_or_else(|| deb_path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let reading = crate::progress::Progress::status(format!("Reading {file}"));
     let mut t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(deb_path.display())?;
+    reading.finish();
     t.package.version.pkgrel = next_pkgrel(prev, &t.package.deb_version, &t.package.version.pkgver);
     if let Some(app) = app {
         apply_overrides(&mut t.package, app);
