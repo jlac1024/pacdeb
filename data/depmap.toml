@@ -169,3 +169,37 @@
 "lsb-release" = "lsb-release"
 "bubblewrap" = "bubblewrap"
 "socat" = "socat"
+
+# Found converting Chrome, Edge, Brave, Signal, Spotify, 1Password, Element, Mullvad,
+# Discord, Zoom, Obsidian, RustDesk and Bitwarden. Each checked with pacman -Si, and
+# library names with the .so files the Arch package ships.
+"gnupg2" = "gnupg"
+"libxcb-shape0" = "libxcb"
+"libxcb-xfixes0" = "libxcb"
+"libxcb-randr0" = "libxcb"
+"libxcb-shm0" = "libxcb"
+"libxcb-xtest0" = "libxcb"
+"libxcb-xinerama0" = "libxcb"
+"libxcb-image0" = "xcb-util-image"
+"libxcb-keysyms1" = "xcb-util-keysyms"
+"libxcb-icccm4" = "xcb-util-wm"
+"libxcb-cursor0" = "xcb-util-cursor"
+"libva2" = "libva"
+"libva-drm2" = "libva"
+"libva-x11-2" = "libva"
+"libgstreamer-plugins-base1.0-0" = "gst-plugins-base-libs"
+"gstreamer1.0-pipewire" = "gst-plugin-pipewire"
+"fonts-liberation" = "ttf-liberation"
+"fonts-liberation2" = "ttf-liberation"
+"libopengl0" = "libglvnd"
+"libxkbcommon-x11-0" = "libxkbcommon-x11"
+"libegl1-mesa" = "mesa"
+# Arch's ffmpeg ships libavcodec.so.63; only ffmpeg4.4 matches a Debian ABI (58).
+# Debian's 60 and 61 have no Arch package and stay unmapped.
+"libavcodec58" = "ffmpeg4.4"
+"libavformat58" = "ffmpeg4.4"
+# Not in Arch: Ubuntu's Unity launcher API, which apps use only when present.
+"libunity9" = ""
+# Packages that only install a vendor's apt key; pacdeb keeps the key itself.
+"brave-keyring" = ""
+"element-io-archive-keyring" = ""

@@ -114,7 +114,8 @@ pub fn list(index: &str, arch: &str) -> Result<Vec<Listed>> {
         if best.get(name).is_some_and(|(b, _)| *b >= parsed) {
             continue;
         }
-        let summary = c.get("Description").and_then(|d| d.lines().next()).unwrap_or_default().trim().to_string();
+        // Some indexes leave the first line of Description empty and start on the next.
+        let summary = c.get("Description").and_then(|d| d.lines().map(str::trim).find(|l| !l.is_empty())).unwrap_or_default().to_string();
         best.insert(name.to_string(), (parsed, Listed { name: name.to_string(), version: version.to_string(), summary }));
     }
     Ok(best.into_values().map(|(_, l)| l).collect())
@@ -157,9 +158,10 @@ mod tests {
         let index = "Package: b\nVersion: 1.0\nArchitecture: amd64\nDescription: Bee\n more text\n\n\
                      Package: a\nVersion: 2.0\nArchitecture: all\nDescription: Ay\n\n\
                      Package: b\nVersion: 1.2\nArchitecture: amd64\nDescription: Newer bee\n\n\
-                     Package: c\nVersion: 1.0\nArchitecture: arm64\nDescription: Not for this machine\n";
+                     Package: c\nVersion: 1.0\nArchitecture: arm64\nDescription: Not for this machine\n\n\
+                     Package: d\nVersion: 1.0\nArchitecture: amd64\nDescription:\n Starts on the next line\n";
         let got = list(index, "amd64").unwrap();
-        let want = [("a", "2.0", "Ay"), ("b", "1.2", "Newer bee")];
+        let want = [("a", "2.0", "Ay"), ("b", "1.2", "Newer bee"), ("d", "1.0", "Starts on the next line")];
         assert_eq!(got.iter().map(|l| (l.name.as_str(), l.version.as_str(), l.summary.as_str())).collect::<Vec<_>>(), want);
     }
 
