@@ -58,6 +58,9 @@ fn first_fingerprint(colons: &str) -> Option<String> {
 
 fn sign(paths: &Paths, key: &str, file: &Path) -> Result<()> {
     let sig = sig_path(file);
+    // repo-add keeps its backup signature as a hard link to this one; writing in place
+    // would change the backup too.
+    let _ = fs::remove_file(&sig);
     run(gpg(&gnupg_home(paths)).args(["--yes", "--no-armor", "--local-user", key, "--detach-sign", "--output"]).arg(&sig).arg(file), "gpg (signing)")?;
     Ok(())
 }
