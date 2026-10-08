@@ -327,11 +327,7 @@ pub fn run_search(term: &str) -> Result<()> {
         let mark = if tracked.contains(&(f.repo.clone(), f.package.name.clone())) { " [tracked]" } else { "" };
         println!("{}/{} {}{mark}\n  {}", st.bold(&f.package.name), f.repo, f.package.version, f.package.summary);
     }
-    let presets: Vec<String> = crate::registry::presets().into_keys().filter(|p| p.contains(&term.to_lowercase())).collect();
-    for p in &presets {
-        println!("{} (built in)\n  install with 'pacdeb install {p}'", st.bold(p));
-    }
-    if hits.is_empty() && presets.is_empty() {
+    if hits.is_empty() {
         bail!("nothing matches '{term}'; 'pacdeb update' refreshes the package lists");
     }
     Ok(())

@@ -2,8 +2,8 @@
 //! The apt-like commands. `pacdeb update` refreshes: it reads every saved apt
 //! repository and asks every app's source for its newest version, and remembers what
 //! it found. `pacdeb upgrade` builds and installs whatever is newer, in one pacman call.
-//! `pacdeb install <name>` installs a tracked app, a preset, or any package the saved
-//! apt repositories offer.
+//! `pacdeb install <name>` installs a tracked app or any package the saved apt
+//! repositories offer.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -321,8 +321,8 @@ fn record(state: &mut State, name: &str, built: &Built, latest: Option<&Latest>)
     }
 }
 
-/// `pacdeb install <name>`, like apt: a tracked app; else a built in preset; else the
-/// newest package of that name in the saved apt repositories, which is then tracked.
+/// `pacdeb install <name>`, like apt: a tracked app, or else the newest package of that
+/// name in the saved apt repositories, which is then tracked.
 /// As in apt, `name/repository` takes the package from that saved repository.
 pub fn install_name(spec: &str, direct: bool) -> Result<()> {
     let paths = Paths::from_env()?;
@@ -344,13 +344,6 @@ pub fn install_name(spec: &str, direct: bool) -> Result<()> {
         }
         return install_app(name, direct);
     }
-    if let Some(preset) = only.is_none().then(|| crate::registry::preset_for(name)).flatten() {
-        if config.apps.contains_key(&preset) {
-            return install_app(&preset, direct);
-        }
-        crate::apps::add_with(&preset, &crate::apps::Flags::default(), false)?;
-        return install_app(&preset, direct);
-    }
     let (mut all, failed) = crate::aptrepos::all_packages(&config, &paths);
     if let Some(r) = only {
         all.retain(|f| f.repo == r);
@@ -363,7 +356,7 @@ pub fn install_name(spec: &str, direct: bool) -> Result<()> {
         let similar: Vec<String> = crate::aptrepos::search(&all, name).into_iter().take(5).map(|f| format!("{}/{}", f.package.name, f.repo)).collect();
         let hint = if similar.is_empty() { String::new() } else { format!("\nSimilar: {}", similar.join(", ")) };
         if config.apt.is_empty() {
-            bail!("{name} is not tracked, not built in, and no apt repositories are saved to look in; add one with 'pacdeb apt add'");
+            bail!("{name} is not tracked and no apt repositories are saved to look in; add one with 'pacdeb apt add', or track a download with 'pacdeb add {name} --source ...'");
         }
         bail!("no package named {name} in the saved apt repositories ('pacdeb update' refreshes their lists){hint}");
     };

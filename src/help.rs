@@ -18,13 +18,13 @@ Working with a .deb file:
 Like apt:
   update                        Check every source for new versions, download nothing
   upgrade [app]                 Build and install everything newer
-  install <name|file.deb>       Install a tracked app, a built in one, or any
-                                package from the saved apt repositories
+  install <name|file.deb>       Install a tracked app, any package from the saved
+                                apt repositories, or a .deb file
   search <words>                Search the packages in the saved apt repositories
   list [--upgradable]           Show tracked apps, or only those with updates
 
 Managing apps and sources:
-  add <app>                     Track an app (proton-mail, example-app built in)
+  add <app>                     Track an app from a download link or GitHub
   set [app]                     Change a tracked app, or the global channel
   remove <app>...               Uninstall apps and stop tracking them
   untrack <app>                 Stop tracking an app, leave it installed
@@ -83,8 +83,7 @@ Builds a package and installs it with 'sudo pacman -U', like 'apt install'.
 You see the sudo prompt and pacman's own confirmation.
 
   <name>             A tracked app: its newest version (reusing the last build
-                     when it is current). A built in app (see 'pacdeb add'): it is
-                     tracked, then installed. Otherwise the newest package of that
+                     when it is current). Otherwise the newest package of that
                      name in any saved apt repository, which is then tracked.
   <name/repository>  That package from that saved apt repository.
   <file.deb>         Convert this file. If no tracked app has its package name, it
@@ -100,16 +99,16 @@ const SEARCH: &str = "\
 Usage: pacdeb search <words>
 
 Lists the packages in the saved apt repositories whose name or description
-contains every word, with their repository and newest version, and the built in
-apps that match. Uses the package lists from the last 'pacdeb update'.
+contains every word, with their repository and newest version. Uses the
+package lists from the last 'pacdeb update'.
 Install one with 'pacdeb install <name>' or 'pacdeb install <name>/<repository>'.
 ";
 
 const ADD: &str = "\
-Usage: pacdeb add <app> [--preset <name> | --source <type> <source options>] [options]
+Usage: pacdeb add <app> --apt <repository> | --source <type> <source options> [options]
 
-Starts tracking an app so 'check' and 'update' look for new versions.
-Known apps need nothing else: 'pacdeb add proton-mail', 'pacdeb add example-app'.
+Starts tracking an app so 'update' and 'upgrade' look for new versions. Packages
+from a saved apt repository need no 'add': 'pacdeb install <package>' tracks them.
 
 Sources:
   direct   A .deb at a URL, with an optional feed that names the newest version

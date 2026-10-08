@@ -8,18 +8,16 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use pacdeb::paths::Paths;
-use pacdeb::registry::{App, Config, SourceConfig, presets};
+use pacdeb::registry::{App, Config, SourceConfig};
 
 use crate::{Ctx, run};
 
-const KINDS: &[(&str, &str)] = &[("preset", "Built in app"), ("direct", "Direct download"), ("apt", "Saved apt repository"), ("github", "GitHub releases"), ("manual", "Manual (.deb files you add)")];
+const KINDS: &[(&str, &str)] = &[("apt", "Saved apt repository"), ("direct", "Direct download"), ("github", "GitHub releases"), ("manual", "Manual (.deb files you add)")];
 
 struct Form {
     name: adw::EntryRow,
     kind: adw::ComboRow,
     kinds: Vec<&'static str>,
-    preset: adw::ComboRow,
-    presets: Vec<String>,
     /// Text fields: flag, row, and which source kind they belong to ("" for any).
     fields: Vec<(&'static str, &'static str, adw::EntryRow)>,
     prerelease: adw::SwitchRow,
@@ -45,7 +43,6 @@ impl Form {
 
     fn show_groups(&self) {
         let kind = self.kind();
-        self.preset.set_visible(kind == "preset");
         for (k, g) in &self.groups {
             g.set_visible(*k == kind);
         }
@@ -65,19 +62,11 @@ impl Form {
         };
         match editing {
             None => {
-                let mut name = self.name.text().trim().to_string();
-                if kind == "preset" {
-                    let preset = self.presets.get(self.preset.selected() as usize).cloned().ok_or("Pick a built in app")?;
-                    if name.is_empty() {
-                        name = preset.clone();
-                    }
-                    args.extend(["add".into(), name, "--preset".into(), preset]);
-                } else {
-                    if name.is_empty() {
-                        return Err("Give the app a name".into());
-                    }
-                    args.extend(["add".into(), name, "--source".into(), kind.into()]);
+                let name = self.name.text().trim().to_string();
+                if name.is_empty() {
+                    return Err("Give the app a name".into());
                 }
+                args.extend(["add".into(), name, "--source".into(), kind.into()]);
                 for (flag, k, row) in &self.fields {
                     let v = row.text().trim().to_string();
                     if (*k == kind || k.is_empty()) && !v.is_empty() {
@@ -131,19 +120,15 @@ impl Form {
 }
 
 fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::PreferencesPage) {
-    let presets: Vec<String> = presets().keys().cloned().collect();
-    let kinds: Vec<&'static str> = KINDS.iter().map(|(k, _)| *k).filter(|k| editing.is_none() || *k != "preset").collect();
+    let kinds: Vec<&'static str> = KINDS.iter().map(|(k, _)| *k).collect();
     let labels: Vec<&str> = kinds.iter().map(|k| KINDS.iter().find(|(kk, _)| kk == k).map(|(_, l)| *l).unwrap_or(k)).collect();
     let page = adw::PreferencesPage::new();
 
     let general = adw::PreferencesGroup::new();
     let name = entry("Name");
     let kind = adw::ComboRow::builder().title("Source").model(&gtk::StringList::new(&labels)).build();
-    let preset_names: Vec<&str> = presets.iter().map(String::as_str).collect();
-    let preset = adw::ComboRow::builder().title("App").model(&gtk::StringList::new(&preset_names)).build();
     general.add(&name);
     general.add(&kind);
-    general.add(&preset);
 
     let mut fields: Vec<(&'static str, &'static str, adw::EntryRow)> = Vec::new();
     let mut groups = Vec::new();
@@ -190,7 +175,7 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
     gh.add(&prerelease);
     page.add(&options);
 
-    let mut form = Form { name, kind, kinds, preset, presets, fields, prerelease, apt_repo, apt_names, before_apt: None, groups, before: BTreeMap::new(), before_kind: None, before_prerelease: false };
+    let mut form = Form { name, kind, kinds, fields, prerelease, apt_repo, apt_names, before_apt: None, groups, before: BTreeMap::new(), before_kind: None, before_prerelease: false };
     if let Some((app_name, app, config)) = editing {
         form.name.set_text(app_name);
         form.name.set_editable(false);
