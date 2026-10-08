@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Turns the services a deb's scripts enable or start into a note pacman shows after
 //! install. Arch packages never enable or start services on their own; the person
 //! decides, so pacdeb tells them what Debian would have done.

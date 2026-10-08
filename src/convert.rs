@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `pacdeb convert`: turn a .deb into a pacman package, or with --dry-run, print what
 //! would be built and everything that needs attention.
 

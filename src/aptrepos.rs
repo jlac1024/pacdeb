@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Saved apt repositories (`[apt.<name>]` in apps.toml) and `pacdeb apt`: adding them
 //! from a vendor's apt line, showing their health, editing them, replacing their
 //! signing key, browsing and removing them. Changes are checked against the live

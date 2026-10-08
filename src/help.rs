@@ -1,7 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Help pages: one overview and one page per command.
 
+/// The overview with the version on top.
+pub fn overview() -> String {
+    format!("pacdeb {}\n{OVERVIEW}", crate::version())
+}
+
 pub const OVERVIEW: &str = "\
-pacdeb: turn Debian .deb packages into pacman packages and keep them updated
+Turns Debian .deb packages into pacman packages and keeps them updated.
 
 Usage: pacdeb <command> [options]
 
@@ -33,7 +39,7 @@ Run 'pacdeb help <command>' or 'pacdeb <command> --help' for details.
 
 Options:
   -h, --help                    Show this help
-  -V, --version                 Show the version
+  -V, --version, version        Show the version and the build it comes from
 
 Environment:
   PACDEB_HOME          Keep config, state and cache under one directory

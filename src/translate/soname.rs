@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Suggests Arch packages for the shared libraries the package's binaries load. This
 //! only ever suggests: nothing found here is added to depends.
 

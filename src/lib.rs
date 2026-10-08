@@ -1,4 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! pacdeb's core, shared by the pacdeb command line tool and pacdeb-gui.
+
+/// The version and the commit it was built from, like "0.2.0 (133ec0e, 2026-10-07)".
+pub fn version() -> String {
+    format!("{} ({})", env!("CARGO_PKG_VERSION"), build())
+}
+
+/// The commit and date the binary was built from, with "modified" for uncommitted changes.
+pub fn build() -> &'static str {
+    env!("PACDEB_BUILD")
+}
 
 pub mod apps;
 pub mod aptline;

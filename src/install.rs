@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Hands built packages to pacman, and removes them. pacdeb never asks for or stores
 //! the sudo password: sudo and pacman talk to the terminal directly, and pacman asks
 //! for its own confirmation.

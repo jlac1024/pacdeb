@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Adding an app, or editing one. The form turns into `pacdeb add` or `pacdeb set`
 //! arguments, so the command line tool checks and saves everything (including
 //! fetching and checking signing keys) the same way it does in a terminal.

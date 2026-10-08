@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Runs the deployed binary. Never builds.
 set -euo pipefail
 

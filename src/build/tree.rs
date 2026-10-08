@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Writes the package's file tree to disk from the deb, as the model describes it.
 
 use std::collections::HashMap;

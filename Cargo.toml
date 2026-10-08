@@ -1,8 +1,9 @@
 [package]
 name = "pacdeb"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Repackage Debian .deb files as pacman packages and keep them updated"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [dependencies]

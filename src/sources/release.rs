@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! What an apt repository's signed Release file says about the repository: who
 //! publishes it, when it was last updated, and until when it may be trusted.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `pacdeb timer`: a systemd user timer that runs `pacdeb timer run` after login and
 //! every few hours. Everything lives in the user's own systemd directory, so no
 //! root is needed.

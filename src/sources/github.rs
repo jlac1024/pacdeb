@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! GitHub releases: the newest release with an asset matching a pattern.
 
 use serde_json::Value;

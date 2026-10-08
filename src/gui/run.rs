@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Running the pacdeb command line tool (and pkexec) from the GUI, with its output
 //! shown as it comes. Commands that would install instead write the built packages
 //! to a list, so the GUI can confirm and install them itself.
@@ -241,7 +242,7 @@ pub fn logged(ctx: &Rc<Ctx>, title: &str, program: &Path, args: &[String], colle
 }
 
 /// Runs the command line tool in a log dialog, then installs whatever it built with
-/// the GUI's own confirmation. Every page is refreshed afterwards.
+/// the GUI's own confirmation. Every page is refreshed afterward.
 pub fn cli_and_install(ctx: &Rc<Ctx>, title: &str, args: &[&str]) {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let ctx2 = ctx.clone();

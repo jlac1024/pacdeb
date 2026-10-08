@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Debian versions as described in deb-version(7): `[epoch:]upstream[-revision]`.
 
 use std::cmp::Ordering;

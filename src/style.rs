@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Terminal colors. Only used when stdout is a terminal and NO_COLOR is not set, so
 //! piped output and logs stay plain.
 

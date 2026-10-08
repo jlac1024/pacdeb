@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Listing the contents of a deb's data archive.
 
 use std::io::Read;

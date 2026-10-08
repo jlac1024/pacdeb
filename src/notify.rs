@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Desktop notifications for the timer. Without a repository it reports updates found,
 //! with an Upgrade button that opens a terminal running `pacdeb upgrade`, since
 //! installing needs the sudo prompt. With one it reports builds ready to install.
@@ -81,7 +82,7 @@ fn notify_with(program: &str, pending: &[String], paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// Opens a terminal running `pacdeb upgrade`, which stays open afterwards so the result
+/// Opens a terminal running `pacdeb upgrade`, which stays open afterward so the result
 /// can be read. Waits for it, since the timer's service would otherwise end and take
 /// the terminal with it.
 fn open_update_terminal() -> Result<()> {

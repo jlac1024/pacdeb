@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Signature checks for apt repositories, with gpg and gpgv run against a private home
 //! directory so the user's own keyring is never read or changed.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Package names that a repository or the AUR also uses. pacman and AUR helpers match
 //! installed packages by name alone, so a pacdeb build named like a repo or AUR package
 //! gets replaced by that package on the next system update. Such builds get a suffix and

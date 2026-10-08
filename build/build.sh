@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # The only build entry point. Keeps cargo's registry and output inside build/.
 set -euo pipefail
 

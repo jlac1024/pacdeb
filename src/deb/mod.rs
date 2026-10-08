@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Reading .deb files: the ar container, the control archive and the data archive.
 
 mod ar;

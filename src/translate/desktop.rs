@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Checks that the app will show up in the launcher with its icon.
 
 use std::collections::{HashMap, HashSet};

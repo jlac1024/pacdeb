@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! One saved apt repository: its health (checked live), its settings, its signing key,
 //! the apps using it, and removing it. Changes run `pacdeb apt ...`, which checks them
 //! against the live repository before saving.

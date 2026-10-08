@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The registry commands: add, set, list, remove and check.
 
 use std::process::Command;

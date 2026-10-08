@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Reads Debian maintainer scripts without running them. Each command is sorted into
 //! something pacdeb turns into package contents, something a pacman hook already does,
 //! something that needs nothing on Arch, or something a person has to look at.

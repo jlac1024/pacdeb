@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The neutral package description that both backends build from.
 
 use crate::version::{ArchVersion, DebVersion};

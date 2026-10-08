@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Direct sources: a .deb at a URL, with an optional feed that names the version.
 
 use serde_json::Value;
