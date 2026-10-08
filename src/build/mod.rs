@@ -35,12 +35,14 @@ pub fn with_makepkg<R: Read + Seek>(
         fs::write(work.join(pkgbuild::install_file_name(pkg)), script).context("writing the .install file")?;
     }
 
+    let busy = crate::progress::Progress::busy(format!("Compressing {} (makepkg)", pkg.name));
     let status = Command::new("makepkg")
         .args(["--force", "--nodeps", "--clean"])
         .current_dir(&work)
         .env("PKGDEST", out_dir)
         .status()
         .context("cannot run makepkg")?;
+    busy.finish();
     if !status.success() {
         bail!("makepkg failed ({status}); the PKGBUILD and files are in {}", work.display());
     }

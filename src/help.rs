@@ -40,6 +40,7 @@ Environment:
   PACDEB_INSTALL_CMD   Command run instead of 'sudo pacman -U'
   PACDEB_GITHUB_TOKEN  Token for GitHub API requests (raises the rate limit)
   NO_COLOR             Turn off colored output
+  PACDEB_PROGRESS      off: no progress bars; lines: progress as lines (for pacdeb-gui)
 
 Files:
   ~/.config/pacdeb/apps.toml     Tracked apps and settings

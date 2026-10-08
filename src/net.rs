@@ -122,6 +122,9 @@ pub fn download(url: &str, dest: &Path, checksum: Option<&Checksum>) -> Result<(
     }
     let part = dest.with_extension("part");
     let resp = get(url, &[])?;
+    let length = resp.headers().get("content-length").and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
+    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut progress = crate::progress::Progress::new(format!("Downloading {name}"), length);
     let mut reader = resp.into_body().into_reader();
     let mut out = BufWriter::new(File::create(&part).context(part.display())?);
     let (mut s256, mut s512) = (Sha256::new(), Sha512::new());
@@ -132,6 +135,7 @@ pub fn download(url: &str, dest: &Path, checksum: Option<&Checksum>) -> Result<(
             break;
         }
         out.write_all(&buf[..n]).context(part.display())?;
+        progress.add(n as u64);
         match checksum {
             Some(Checksum::Sha256(_)) => s256.update(&buf[..n]),
             Some(Checksum::Sha512(_)) => s512.update(&buf[..n]),
@@ -149,7 +153,9 @@ pub fn download(url: &str, dest: &Path, checksum: Option<&Checksum>) -> Result<(
         let _ = fs::remove_file(&part);
         bail!("{url} does not match its published checksum; the download was deleted");
     }
-    fs::rename(&part, dest).context(dest.display())
+    fs::rename(&part, dest).context(dest.display())?;
+    progress.finish();
+    Ok(())
 }
 
 #[cfg(test)]

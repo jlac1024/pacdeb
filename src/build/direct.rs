@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::error::{Context, Result};
+use crate::progress::{Counting, Progress};
 use crate::model::{NodeKind, Package};
 
 /// Zstd level 3 matches makepkg's default and keeps builds of large apps quick.
@@ -19,7 +20,9 @@ const ZSTD_LEVEL: i32 = 3;
 pub fn pack(pkg: &Package, tree: &Path, install: Option<&str>, out_dir: &Path, now: u64) -> Result<PathBuf> {
     let size: u64 = pkg.nodes.iter().filter(|n| n.kind == NodeKind::File).map(|n| n.size).sum();
     let pkginfo = pkginfo(pkg, now, size);
-    let mtree = mtree(pkg, tree, pkginfo.as_bytes(), install.map(str::as_bytes), now)?;
+    // Every file is read twice: once for its checksum in .MTREE, once into the archive.
+    let mut progress = Progress::new(format!("Packing {}", pkg.name), Some(size * 2));
+    let mtree = mtree(pkg, tree, pkginfo.as_bytes(), install.map(str::as_bytes), now, &mut progress)?;
 
     let name = format!("{}-{}-{}.pkg.tar.zst", pkg.name, pkg.version, pkg.arch);
     let dest = out_dir.join(&name);
@@ -48,7 +51,7 @@ pub fn pack(pkg: &Package, tree: &Path, install: Option<&str>, out_dir: &Path, n
                 let f = File::open(&src).context(src.display())?;
                 let mut h = header(tar::EntryType::Regular, n.mode, now);
                 h.set_size(f.metadata().context(src.display())?.len());
-                tar.append_data(&mut h, rel, BufReader::new(f)).context(&n.path)?;
+                tar.append_data(&mut h, rel, Counting { inner: BufReader::new(f), progress: &mut progress }).context(&n.path)?;
             }
             NodeKind::Symlink(target) => {
                 let mut h = header(tar::EntryType::Symlink, 0o777, now);
@@ -67,6 +70,7 @@ pub fn pack(pkg: &Package, tree: &Path, install: Option<&str>, out_dir: &Path, n
     out.flush().context(part.display())?;
     drop(out);
     fs::rename(&part, &dest).context(dest.display())?;
+    progress.finish();
     Ok(dest)
 }
 
@@ -125,7 +129,7 @@ fn pkginfo(pkg: &Package, now: u64, size: u64) -> String {
 }
 
 /// The gzipped mtree pacman keeps in its database to check installed files.
-fn mtree(pkg: &Package, tree: &Path, pkginfo: &[u8], install: Option<&[u8]>, now: u64) -> Result<Vec<u8>> {
+fn mtree(pkg: &Package, tree: &Path, pkginfo: &[u8], install: Option<&[u8]>, now: u64, progress: &mut Progress) -> Result<Vec<u8>> {
     let mut s = String::from("#mtree\n/set type=file uid=0 gid=0 mode=644\n");
     let time = format!("time={now}.0");
     if let Some(script) = install {
@@ -141,6 +145,10 @@ fn mtree(pkg: &Package, tree: &Path, pkginfo: &[u8], install: Option<&[u8]>, now
             NodeKind::File | NodeKind::Hardlink(_) => {
                 let src = tree.join(n.path.trim_start_matches('/'));
                 let (size, digest) = file_digest(&src)?;
+                // A hardlink's content is archived once, under its target.
+                if n.kind == NodeKind::File {
+                    progress.add(size);
+                }
                 let mode = if n.mode == 0o644 { String::new() } else { format!(" mode={:o}", n.mode) };
                 writeln!(s, "{path} {time}{mode} size={size} sha256digest={digest}").unwrap();
             }

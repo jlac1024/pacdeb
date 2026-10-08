@@ -64,7 +64,7 @@ fn new_record_list() -> PathBuf {
 fn spawn(program: &Path, args: &[String], record: Option<&Path>) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
     let mut cmd = Command::new(program);
-    cmd.args(args).env("NO_COLOR", "1").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args).env("NO_COLOR", "1").env("PACDEB_PROGRESS", "lines").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(list) = record {
         let me = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_else(|_| "pacdeb-gui".into());
         cmd.env("PACDEB_INSTALL_CMD", format!("{me} --record {}", list.display()));
@@ -108,9 +108,11 @@ fn pump(rx: Receiver<Msg>, line: impl Fn(&str) + 'static, done: impl FnOnce(bool
         match rx.try_recv() {
             Ok(Msg::Line(l)) => {
                 line(&l);
-                let mut o = output.borrow_mut();
-                o.push_str(&l);
-                o.push('\n');
+                if !l.starts_with("@progress") {
+                    let mut o = output.borrow_mut();
+                    o.push_str(&l);
+                    o.push('\n');
+                }
             }
             Ok(Msg::Finished(ok)) => {
                 if let Some(d) = done.borrow_mut().take() {
@@ -158,10 +160,14 @@ pub fn logged(ctx: &Rc<Ctx>, title: &str, program: &Path, args: &[String], colle
         .build();
     let scroll = gtk::ScrolledWindow::builder().child(&text).vexpand(true).min_content_height(360).build();
     let spinner = gtk::Spinner::builder().spinning(true).build();
-    let status = gtk::Label::builder().label("Working...").xalign(0.0).hexpand(true).build();
-    let bottom = gtk::Box::builder().spacing(12).margin_top(8).margin_bottom(8).margin_start(12).margin_end(12).build();
-    bottom.append(&spinner);
-    bottom.append(&status);
+    let status = gtk::Label::builder().label("Working...").xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::Middle).build();
+    let row = gtk::Box::builder().spacing(12).build();
+    row.append(&spinner);
+    row.append(&status);
+    let bar = gtk::ProgressBar::builder().visible(false).build();
+    let bottom = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_top(8).margin_bottom(10).margin_start(12).margin_end(12).build();
+    bottom.append(&row);
+    bottom.append(&bar);
 
     let view = adw::ToolbarView::new();
     view.add_top_bar(&adw::HeaderBar::new());
@@ -172,10 +178,47 @@ pub fn logged(ctx: &Rc<Ctx>, title: &str, program: &Path, args: &[String], colle
 
     let list = collect.then(new_record_list);
     let rx = spawn(program, args, list.as_deref());
+    // A step with no known size (makepkg compressing) keeps the bar moving.
+    let unmeasured = Rc::new(std::cell::Cell::new(false));
+    glib::timeout_add_local(Duration::from_millis(150), {
+        let (bar, unmeasured, dialog) = (bar.clone(), unmeasured.clone(), dialog.clone());
+        move || {
+            if dialog.can_close() {
+                return glib::ControlFlow::Break;
+            }
+            if unmeasured.get() {
+                bar.pulse();
+            }
+            glib::ControlFlow::Continue
+        }
+    });
     let line = {
         let buffer = buffer.clone();
         let text = text.clone();
+        let (bar, status, unmeasured) = (bar.clone(), status.clone(), unmeasured.clone());
         move |l: &str| {
+            match pacdeb::progress::parse_line(l) {
+                Some(pacdeb::progress::Line::Step { label, done, total }) => {
+                    bar.set_visible(true);
+                    status.set_label(&label);
+                    unmeasured.set(total == 0);
+                    if total > 0 {
+                        bar.set_fraction((done as f64 / total as f64).clamp(0.0, 1.0));
+                        bar.set_text(Some(&format!("{} of {}", pacdeb::human::size(done), pacdeb::human::size(total))));
+                        bar.set_show_text(true);
+                    } else {
+                        bar.set_show_text(false);
+                    }
+                    return;
+                }
+                Some(pacdeb::progress::Line::Done { .. }) => {
+                    unmeasured.set(false);
+                    bar.set_visible(false);
+                    status.set_label("Working...");
+                    return;
+                }
+                None => {}
+            }
             buffer.insert(&mut buffer.end_iter(), &format!("{l}\n"));
             let mark = buffer.create_mark(None, &buffer.end_iter(), false);
             text.scroll_mark_onscreen(&mark);
@@ -187,6 +230,7 @@ pub fn logged(ctx: &Rc<Ctx>, title: &str, program: &Path, args: &[String], colle
         move |ok: bool, output: String| {
             spinner.set_spinning(false);
             spinner.set_visible(false);
+            bar.set_visible(false);
             status.set_label(if ok { "Finished" } else { "Failed; the output above says why" });
             dialog.set_can_close(true);
             let packages = list.as_deref().map(read_list).unwrap_or_default();
