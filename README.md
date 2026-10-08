@@ -43,20 +43,17 @@ Convert and install a deb you downloaded:
 pacdeb install ~/Downloads/some-app_1.2.3_amd64.deb
 ```
 
-Track an app so it stays updated. Proton Mail and Example App are built in:
+It works like apt. Save the apt repositories your apps come from, then:
 
 ```
-pacdeb add example-app
-pacdeb add proton-mail --channel Stable
-pacdeb update
+pacdeb update                  # check every source for new versions
+pacdeb upgrade                 # build and install everything newer
+pacdeb search editor           # search the saved repositories
+pacdeb install example-app  # install by name: tracked, built in, or from a repository
 ```
 
-Later, see what is new and install it:
-
-```
-pacdeb check
-pacdeb update
-```
+Proton Mail and Example App are built in, so `pacdeb install proton-mail` works
+with nothing set up first.
 
 pacdeb never handles your password. Installing runs `sudo pacman -U` in your terminal,
 so you see the usual sudo prompt and pacman's own confirmation.
@@ -67,13 +64,15 @@ so you see the usual sudo prompt and pacman's own confirmation.
 |---|---|
 | `inspect <file.deb>` | Show what is in a deb and how it would convert |
 | `convert <file.deb>` | Build a package without installing it (`--dry-run` to only report) |
-| `install <file.deb\|app>` | Build and install |
+| `update` | Check every source for new versions (like `apt update`) |
+| `upgrade [app]` | Build and install everything newer (like `apt upgrade`) |
+| `install <name\|file.deb>` | Install by name from the tracked apps, built in apps or saved apt repositories, or a .deb file |
+| `search <words>` | Search the saved apt repositories |
 | `add <app>` | Track an app |
 | `set [app]` | Change a tracked app, or the global channel |
-| `list` | Tracked apps with built and installed versions |
-| `check [app]` | Report available updates, download nothing |
+| `list [--upgradable]` | Tracked apps with built and installed versions |
+| `check [app]` | Ask the sources now without remembering the answer |
 | `packages <app>` | List everything in an app's apt repository |
-| `update [app]` | Download, build and install anything newer |
 | `remove <app>` | Stop tracking an app (leaves it installed) |
 | `timer enable` | Check after login and every 6 hours, with a desktop notification for new versions |
 | `repo init` | Publish builds to a local pacman repository, so system updates install them |
@@ -107,7 +106,7 @@ Each tracked app has one source:
   ```
   pacdeb add some-app --source github --repo owner/name --asset '*_amd64.deb'
   ```
-- **manual**: no source. Update with `pacdeb update <app> --file <new.deb>`.
+- **manual**: no source. Upgrade with `pacdeb upgrade <app> --file <new.deb>`.
 
 Apps with channels (like Proton Mail's Stable, EarlyAccess and Alpha) take
 `--channel`, or use the global one from `pacdeb set --channel <name>`.

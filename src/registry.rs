@@ -162,7 +162,7 @@ pub enum SourceConfig {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         prerelease: bool,
     },
-    /// No remote: new versions come from `pacdeb update <app> --file <deb>`.
+    /// No remote: new versions come from `pacdeb upgrade <app> --file <deb>`.
     Manual {},
 }
 
@@ -357,6 +357,28 @@ pub struct AppState {
     pub etag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_modified: Option<String>,
+    /// What the source offered at the last 'pacdeb update'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available: Option<Available>,
+}
+
+/// The newest version a source offered when it was last refreshed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Available {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// sha256 or sha512, as hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<String>,
+    /// Seconds since 1970.
+    pub checked: i64,
 }
 
 impl State {

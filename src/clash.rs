@@ -46,8 +46,22 @@ pub fn choose(base: &str, lookup: &dyn Lookup) -> Result<Option<Renamed>> {
     bail!("{base} and its suffixed names are all taken in the repos or the AUR; pick a name with --pkgname")
 }
 
-/// Asks pacman and the AUR's web API.
-pub struct LiveLookup;
+/// Asks pacman and the AUR's web API. pacdeb's own local repository (`own_repo`) holds
+/// earlier pacdeb builds, which are not a clash.
+pub struct LiveLookup {
+    pub own_repo: Option<String>,
+}
+
+impl LiveLookup {
+    /// With the local repository named in pacdeb's settings, if one is set up.
+    pub fn new() -> LiveLookup {
+        let own_repo = crate::paths::Paths::from_env()
+            .and_then(|p| crate::registry::Config::load(&p.config))
+            .ok()
+            .and_then(|c| c.settings.repo.map(|r| r.name));
+        LiveLookup { own_repo }
+    }
+}
 
 impl Lookup for LiveLookup {
     fn repo_of(&self, name: &str) -> Option<String> {
@@ -55,9 +69,11 @@ impl Lookup for LiveLookup {
         if !out.status.success() {
             return None;
         }
+        // A name can be in several repositories; any other than pacdeb's own is a clash.
         let text = String::from_utf8_lossy(&out.stdout);
-        let repo = text.lines().find_map(|l| l.strip_prefix("Repository")?.split_once(':').map(|(_, v)| v.trim().to_string()));
-        Some(repo.unwrap_or_else(|| "a sync".into()))
+        text.lines()
+            .filter_map(|l| l.strip_prefix("Repository")?.split_once(':').map(|(_, v)| v.trim().to_string()))
+            .find(|r| Some(r) != self.own_repo.as_ref())
     }
 
     fn in_aur(&self, names: &[String]) -> Result<Vec<String>> {

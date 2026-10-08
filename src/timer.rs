@@ -58,17 +58,18 @@ fn systemctl(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// What the timer runs. With a repository, new versions are built in the background
-/// and published there, so the system updater installs them; without one, updates
-/// are only reported.
+/// What the timer runs: 'pacdeb update', then with a repository, new versions are built
+/// in the background and published there, so the system updater installs them; without
+/// one, a notification says what can be upgraded.
 fn scheduled() -> Result<()> {
     let paths = crate::paths::Paths::from_env()?;
     let config = crate::registry::Config::load(&paths.config)?;
+    let refreshed = crate::update::refresh(false)?;
     if config.settings.repo.is_some() {
         let opts = crate::update::Options { name: None, file: None, direct: false, no_install: true, notify: true };
-        crate::update::update(&opts)
+        crate::update::upgrade(&opts)
     } else {
-        crate::apps::check(None, true)
+        crate::notify::updates(&refreshed.upgradable, &paths)
     }
 }
 
@@ -111,7 +112,7 @@ fn enable(dir: &Path) -> Result<()> {
     if crate::registry::Config::load(&paths.config)?.settings.repo.is_some() {
         println!("New versions are built in the background and installed by your next system update.");
     } else {
-        println!("New versions show up as a notification; its Update button runs 'pacdeb update' in a terminal.");
+        println!("New versions show up as a notification; its Upgrade button runs 'pacdeb upgrade' in a terminal.");
     }
     println!("The timer runs {}; run 'pacdeb timer enable' again if you move it.", exe.display());
     Ok(())

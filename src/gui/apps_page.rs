@@ -1,42 +1,37 @@
-//! The Apps page: tracked apps with their versions, checking for updates, updating,
-//! and adding, editing or removing apps.
+//! The Apps page: tracked apps with their versions; Update (refresh, like apt update)
+//! and Upgrade (build and install what is newer); adding, editing or removing apps.
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
 use pacdeb::apps::{self, Status};
 use pacdeb::paths::Paths;
 use pacdeb::registry::{Config, State};
+use pacdeb::sources::{Latest, release};
 
 use crate::{Ctx, run, source_dialog};
-
-type Found = Rc<RefCell<BTreeMap<String, Result<Status, String>>>>;
 
 pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder()
         .title("Tracked apps")
-        .description("Apps pacdeb builds from .deb releases and keeps updated")
+        .description("Update checks every source for new versions; Upgrade builds and installs them")
         .build();
-    let check = gtk::Button::builder().icon_name("view-refresh-symbolic").tooltip_text("Check for updates").css_classes(["flat"]).build();
-    let update_all = gtk::Button::builder().label("Update all").css_classes(["flat"]).build();
+    let update = gtk::Button::builder().label("Update").tooltip_text("Check every source for new versions (pacdeb update)").css_classes(["flat"]).build();
+    let upgrade = gtk::Button::builder().label("Upgrade all").tooltip_text("Build and install everything newer (pacdeb upgrade)").css_classes(["flat"]).build();
     let add = gtk::Button::builder().icon_name("list-add-symbolic").tooltip_text("Add an app").css_classes(["flat"]).build();
     let buttons = gtk::Box::builder().spacing(6).build();
-    buttons.append(&check);
-    buttons.append(&update_all);
+    buttons.append(&update);
+    buttons.append(&upgrade);
     buttons.append(&add);
     group.set_header_suffix(Some(&buttons));
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     group.add(&list);
     page.add(&group);
 
-    let found: Found = Rc::new(RefCell::new(BTreeMap::new()));
     let fill: Rc<dyn Fn()> = {
-        let (ctx, list, found) = (ctx.clone(), list.clone(), found.clone());
-        Rc::new(move || fill_list(&ctx, &list, &found))
+        let (ctx, list) = (ctx.clone(), list.clone());
+        Rc::new(move || fill_list(&ctx, &list))
     };
     fill();
     ctx.on_refresh({
@@ -44,25 +39,23 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
         move || fill()
     });
 
-    check.connect_clicked({
-        let (fill, found, ctx) = (fill.clone(), found.clone(), ctx.clone());
-        move |button| {
-            button.set_sensitive(false);
-            let (fill, found, ctx, button) = (fill.clone(), found.clone(), ctx.clone(), button.clone());
-            glib::spawn_future_local(async move {
-                match gio::spawn_blocking(check_all).await {
-                    Ok(Ok(results)) => *found.borrow_mut() = results,
-                    Ok(Err(e)) => ctx.toast(&e),
-                    Err(_) => ctx.toast("Checking stopped unexpectedly"),
+    update.connect_clicked({
+        let ctx = ctx.clone();
+        move |_| {
+            let ctx2 = ctx.clone();
+            run::logged(&ctx, "Updating", &run::cli(), &["update".to_string()], false, move |log, done| {
+                ctx2.refresh();
+                if done.ok {
+                    log.close();
+                    let summary = done.output.lines().find(|l| l.contains("can be upgraded") || l.contains("up to date")).unwrap_or("Updated");
+                    ctx2.toast(summary.split(" Run ").next().unwrap_or(summary));
                 }
-                fill();
-                button.set_sensitive(true);
             });
         }
     });
-    update_all.connect_clicked({
+    upgrade.connect_clicked({
         let ctx = ctx.clone();
-        move |_| run::cli_and_install(&ctx, "Updating all apps", &["update"])
+        move |_| run::cli_and_install(&ctx, "Upgrading all apps", &["upgrade"])
     });
     add.connect_clicked({
         let ctx = ctx.clone();
@@ -71,15 +64,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     page.upcast()
 }
 
-/// Asks every app's source for its newest version. Runs off the main thread.
-fn check_all() -> Result<BTreeMap<String, Result<Status, String>>, String> {
-    let paths = Paths::from_env().map_err(|e| e.to_string())?;
-    let config = Config::load(&paths.config).map_err(|e| e.to_string())?;
-    let state = State::load(&paths.state).map_err(|e| e.to_string())?;
-    Ok(config.apps.keys().map(|n| (n.clone(), apps::check_app(n, &config, &state, &paths).map_err(|e| e.to_string()))).collect())
-}
-
-fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox, found: &Found) {
+fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox) {
     list.remove_all();
     let loaded = Paths::from_env().and_then(|p| Ok((Config::load(&p.config)?, State::load(&p.state)?)));
     let (config, state) = match loaded {
@@ -102,25 +87,32 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox, found: &Found) {
         }
         parts.push(format!("built {}", s.and_then(|s| s.deb_version.clone()).unwrap_or_else(|| "nothing yet".into())));
         parts.push(format!("installed {}", apps::installed_version(pkg).unwrap_or_else(|| "no".into())));
+        let available = s.and_then(|s| s.available.as_ref());
+        if let Some(a) = available {
+            parts.push(format!("checked {}", release::relative(a.checked, release::now())));
+        }
         let row = adw::ActionRow::builder().title(name).subtitle(parts.join(" · ")).build();
 
-        let (label, class, newer) = match found.borrow().get(name) {
+        let found = available.map(|a| apps::status(&Latest::from_available(a), s));
+        if let Some(Status::Newer { latest, .. }) = &found {
+            parts.push(format!("available {latest}"));
+        }
+        let (label, class, newer) = match found {
             None => (String::new(), "dim-label", false),
-            Some(Err(e)) => (format!("error: {e}"), "error", false),
-            Some(Ok(Status::UpToDate(_))) => ("up to date".into(), "success", false),
-            Some(Ok(Status::Newer { latest, .. })) => (format!("{latest} available"), "warning", true),
-            Some(Ok(Status::Changed(true))) => ("new download".into(), "warning", true),
-            Some(Ok(Status::Changed(false))) => ("unchanged".into(), "success", false),
-            Some(Ok(Status::Manual)) => ("manual".into(), "dim-label", false),
+            Some(Status::UpToDate(_)) => ("up to date".into(), "success", false),
+            Some(Status::Newer { .. }) => ("update available".into(), "warning", true),
+            Some(Status::Changed(true)) => ("new download".into(), "warning", true),
+            Some(Status::Changed(false)) => ("unchanged".into(), "success", false),
+            Some(Status::Manual) => ("manual".into(), "dim-label", false),
         };
         if !label.is_empty() {
             let l = gtk::Label::builder().label(&label).css_classes([class]).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(36).tooltip_text(&label).build();
             row.add_suffix(&l);
         }
         if newer {
-            let b = gtk::Button::builder().label("Update").valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
+            let b = gtk::Button::builder().label("Upgrade").valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
             let (ctx, name) = (ctx.clone(), name.clone());
-            b.connect_clicked(move |_| run::cli_and_install(&ctx, &format!("Updating {name}"), &["update", &name]));
+            b.connect_clicked(move |_| run::cli_and_install(&ctx, &format!("Upgrading {name}"), &["upgrade", &name]));
             row.add_suffix(&b);
         }
         let edit = gtk::Button::builder().icon_name("document-edit-symbolic").tooltip_text("Edit").valign(gtk::Align::Center).css_classes(["flat"]).build();

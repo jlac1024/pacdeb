@@ -1,5 +1,5 @@
 //! Desktop notifications for the timer. Without a repository it reports updates found,
-//! with an Update button that opens a terminal running `pacdeb update`, since
+//! with an Upgrade button that opens a terminal running `pacdeb upgrade`, since
 //! installing needs the sudo prompt. With one it reports builds ready to install.
 
 use std::fs;
@@ -72,25 +72,25 @@ fn notify_with(program: &str, pending: &[String], paths: &Paths) -> Result<()> {
     };
     // --action waits until the notification is clicked or closed and prints the action.
     let out = Command::new(program)
-        .args(["--app-name=pacdeb", "--icon=system-software-update", "--action=update=Update", &title, &text])
+        .args(["--app-name=pacdeb", "--icon=system-software-update", "--action=upgrade=Upgrade", &title, &text])
         .output()
         .context(format!("cannot run {program} (install libnotify for notifications)"))?;
-    if String::from_utf8_lossy(&out.stdout).trim() == "update" {
+    if String::from_utf8_lossy(&out.stdout).trim() == "upgrade" {
         open_update_terminal()?;
     }
     Ok(())
 }
 
-/// Opens a terminal running `pacdeb update`, which stays open afterwards so the result
+/// Opens a terminal running `pacdeb upgrade`, which stays open afterwards so the result
 /// can be read. Waits for it, since the timer's service would otherwise end and take
 /// the terminal with it.
 fn open_update_terminal() -> Result<()> {
     let exe = std::env::current_exe().context("finding the pacdeb binary")?;
-    let script = r#""$0" update; status=$?; echo; printf 'Press Enter to close. '; read -r _; exit $status"#;
+    let script = r#""$0" upgrade; status=$?; echo; printf 'Press Enter to close. '; read -r _; exit $status"#;
     let inner: Vec<String> = ["sh", "-c", script].iter().map(|s| s.to_string()).chain([exe.display().to_string()]).collect();
     let preferred = std::env::var("TERMINAL").ok().filter(|t| !t.is_empty());
     let Some((term, args)) = pick_terminal(preferred.as_deref(), |t| on_path(t).is_some()) else {
-        bail!("no terminal found to run 'pacdeb update' in; set TERMINAL to your terminal's command");
+        bail!("no terminal found to run 'pacdeb upgrade' in; set TERMINAL to your terminal's command");
     };
     Command::new(&term).args(&args).args(&inner).status().context(format!("cannot start {term}"))?;
     Ok(())

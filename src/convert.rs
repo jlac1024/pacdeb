@@ -30,7 +30,7 @@ pub fn run(opts: &Options) -> Result<()> {
         let tables = Tables::load(&paths.config)?;
         let mut deb = Deb::open(&opts.deb)?;
         let mut t = translate::translate(&mut deb, &tables, 1, &translate::LiveSystem).context(opts.deb.display())?;
-        avoid_clash(&mut t.package, None, &clash::LiveLookup, Style::for_stdout());
+        avoid_clash(&mut t.package, None, &clash::LiveLookup::new(), Style::for_stdout());
         let backend = if opts.direct { "direct (.pkg.tar.zst written by pacdeb)" } else { "makepkg (PKGBUILD)" };
         let mut text = format!("Backend: {backend}\n");
         if let Some(out) = &opts.out {
@@ -141,7 +141,7 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
         apply_overrides(&mut t.package, app);
     }
     let style = Style::for_stdout();
-    let renamed = avoid_clash(&mut t.package, app, &clash::LiveLookup, style);
+    let renamed = avoid_clash(&mut t.package, app, &clash::LiveLookup::new(), style);
 
     let p = &t.package;
     println!("Building {} {} from {}", style.bold(&p.name), p.version, deb_path.display());

@@ -7,6 +7,7 @@ mod browse_dialog;
 mod convert_page;
 mod install;
 mod repo_dialog;
+mod search_page;
 mod run;
 mod settings_page;
 mod source_dialog;
@@ -57,28 +58,30 @@ fn main() -> ExitCode {
     }
     let mut page = None;
     let mut deb = None;
+    let mut search = None;
     let mut rest = args[1..].iter();
     while let Some(a) = rest.next() {
         match a.as_str() {
             "--page" => page = rest.next().cloned(),
+            "--search" => search = rest.next().cloned(),
             "-h" | "--help" => {
-                println!("Usage: pacdeb-gui [--page apps|sources|convert|settings] [file.deb]");
+                println!("Usage: pacdeb-gui [--page apps|search|sources|convert|settings] [--search <words>] [file.deb]");
                 return ExitCode::SUCCESS;
             }
             _ if !a.starts_with('-') => deb = Some(std::path::PathBuf::from(a)),
             other => {
-                eprintln!("pacdeb-gui: unknown option '{other}'. Usage: pacdeb-gui [--page apps|sources|convert|settings] [file.deb]");
+                eprintln!("pacdeb-gui: unknown option '{other}'. Usage: pacdeb-gui [--page apps|search|sources|convert|settings] [--search <words>] [file.deb]");
                 return ExitCode::from(2);
             }
         }
     }
     let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_activate(move |app| build_window(app, page.as_deref(), deb.clone()));
+    app.connect_activate(move |app| build_window(app, page.as_deref(), deb.clone(), search.clone()));
     let code = app.run_with_args(&args[..1]);
     code.into()
 }
 
-fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::path::PathBuf>) {
+fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::path::PathBuf>, search: Option<String>) {
     if let Some(w) = app.active_window() {
         w.present();
         return;
@@ -102,16 +105,22 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
     let ctx = Rc::new(Ctx { window: window.clone(), toasts, refreshers: RefCell::new(Vec::new()) });
 
     stack.add_titled_with_icon(&apps_page::build(&ctx), Some("apps"), "Apps", "view-list-symbolic");
+    let (search_widget, search_entry) = search_page::build(&ctx);
+    stack.add_titled_with_icon(&search_widget, Some("search"), "Search", "system-search-symbolic");
     stack.add_titled_with_icon(&sources_page::build(&ctx), Some("sources"), "Sources", "network-server-symbolic");
     let (convert, converter) = convert_page::build(&ctx);
     stack.add_titled_with_icon(&convert, Some("convert"), "Convert", "package-x-generic-symbolic");
     stack.add_titled_with_icon(&settings_page::build(&ctx), Some("settings"), "Settings", "emblem-system-symbolic");
     match (deb, page) {
+        _ if search.is_some() => {
+            stack.set_visible_child_name("search");
+            search_entry.set_text(search.as_deref().unwrap_or_default());
+        }
         (Some(path), _) => {
             stack.set_visible_child_name("convert");
             convert_page::show(&converter, path);
         }
-        (None, Some(p)) if ["apps", "sources", "convert", "settings"].contains(&p) => stack.set_visible_child_name(p),
+        (None, Some(p)) if ["apps", "search", "sources", "convert", "settings"].contains(&p) => stack.set_visible_child_name(p),
         _ => {}
     }
     window.present();

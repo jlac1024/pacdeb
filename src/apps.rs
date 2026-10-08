@@ -252,6 +252,12 @@ fn apply_app_flags(app: &mut App, f: &Flags) {
 }
 
 pub fn add(name: &str, f: &Flags) -> Result<()> {
+    add_with(name, f, true)
+}
+
+/// `hint` adds the closing "what next" line, which 'pacdeb install' leaves out since
+/// it goes on to install right away.
+pub fn add_with(name: &str, f: &Flags, hint: bool) -> Result<()> {
     check_app_name(name)?;
     let paths = Paths::from_env()?;
     let mut config = Config::load(&paths.config)?;
@@ -315,7 +321,9 @@ pub fn add(name: &str, f: &Flags) -> Result<()> {
     if let Some(note) = preset.and_then(|p| p.note.as_deref()) {
         println!("{note}");
     }
-    println!("Run 'pacdeb check {name}' to see the newest version.");
+    if hint {
+        println!("Run 'pacdeb install {name}' to install it, or 'pacdeb check {name}' to see the newest version.");
+    }
     Ok(())
 }
 
@@ -450,6 +458,39 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
+/// `pacdeb list --upgradable`: apps whose source offered something newer at the last
+/// 'pacdeb update'.
+pub fn list_upgradable() -> Result<()> {
+    let paths = Paths::from_env()?;
+    let config = Config::load(&paths.config)?;
+    let state = State::load(&paths.state)?;
+    let st = Style::for_stdout();
+    let mut any = false;
+    let mut never = false;
+    for (name, app) in &config.apps {
+        let s = state.apps.get(name);
+        let Some(a) = s.and_then(|s| s.available.as_ref()) else {
+            never |= !matches!(app.source, SourceConfig::Manual {});
+            continue;
+        };
+        let line = match status(&Latest::from_available(a), s) {
+            Status::Newer { current: Some(c), latest } => format!("{}/{} {latest} [upgradable from: {c}]", st.bold(name), app.source.kind()),
+            Status::Newer { current: None, latest } => format!("{}/{} {latest} [not built yet]", st.bold(name), app.source.kind()),
+            Status::Changed(true) => format!("{}/{} [the download changed]", st.bold(name), app.source.kind()),
+            _ => continue,
+        };
+        any = true;
+        println!("{line}");
+    }
+    if !any {
+        println!("Nothing to upgrade.");
+    }
+    if never {
+        println!("{}", st.dim("Some apps were not refreshed yet; run 'pacdeb update' first."));
+    }
+    Ok(())
+}
+
 /// What check found for one app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -535,7 +576,7 @@ pub fn check(name: Option<&str>, notify: bool) -> Result<()> {
                     pending.push(format!("{n} (new download)"));
                 }
                 Status::Changed(false) => println!("{label}  unchanged since the last build"),
-                Status::Manual => println!("{label}  manual source: update with 'pacdeb update {n} --file <deb>'"),
+                Status::Manual => println!("{label}  manual source: upgrade with 'pacdeb upgrade {n} --file <deb>'"),
             },
         }
     }

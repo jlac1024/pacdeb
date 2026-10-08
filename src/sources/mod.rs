@@ -28,6 +28,49 @@ pub struct Latest {
     pub head: Option<Head>,
 }
 
+impl Latest {
+    pub fn to_available(&self, checked: i64) -> crate::registry::Available {
+        crate::registry::Available {
+            version: self.version.clone(),
+            url: self.url.clone(),
+            checksum: self.checksum.as_ref().map(|c| c.hex().to_string()),
+            etag: self.head.as_ref().and_then(|h| h.etag.clone()),
+            last_modified: self.head.as_ref().and_then(|h| h.last_modified.clone()),
+            checked,
+        }
+    }
+
+    pub fn from_available(a: &crate::registry::Available) -> Latest {
+        let head = (a.etag.is_some() || a.last_modified.is_some()).then(|| Head { etag: a.etag.clone(), last_modified: a.last_modified.clone() });
+        Latest { version: a.version.clone(), url: a.url.clone(), checksum: a.checksum.as_deref().and_then(Checksum::from_hex), head }
+    }
+}
+
+/// The newest `package` in already fetched apt indexes, as a download.
+pub fn apt_latest_in(indexes: &[(String, String)], repository: &str, repo: &crate::registry::AptRepoConfig, package: &str) -> Result<Latest> {
+    let arch = apt_fetch::arch(repo);
+    let mut best: Option<apt::Candidate> = None;
+    for (_, index) in indexes {
+        if let Some(c) = apt::pick(index, package, &arch)? {
+            let newer = best.as_ref().is_none_or(|b| {
+                matches!((crate::version::DebVersion::parse(&c.version), crate::version::DebVersion::parse(&b.version)), (Ok(n), Ok(o)) if n > o)
+            });
+            if newer {
+                best = Some(c);
+            }
+        }
+    }
+    let Some(c) = best else {
+        bail!("apt repository {repository} has no {package} for {arch}");
+    };
+    Ok(Latest {
+        version: Some(c.version),
+        url: Some(format!("{}/{}", repo.url.trim_end_matches('/'), c.filename.trim_start_matches("./"))),
+        checksum: c.sha256.as_deref().and_then(Checksum::from_hex),
+        head: None,
+    })
+}
+
 /// Asks the source what its newest version is. Only feeds and indexes are fetched,
 /// never the deb itself. `config_dir` resolves apt key paths; `cache_dir` holds gpg's
 /// scratch home.
@@ -77,28 +120,7 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config: &
                 bail!("apt repository {repository} has no signing key; add one with 'pacdeb apt key {repository} --key-url <url>'");
             };
             let fetched = apt_fetch::fetch(repository, repo, &config_dir.join(key), cache_dir)?;
-            let arch = apt_fetch::arch(repo);
-            let package = package.as_deref().unwrap_or(app);
-            let mut best: Option<apt::Candidate> = None;
-            for (_, index) in &fetched.indexes {
-                if let Some(c) = apt::pick(index, package, &arch)? {
-                    let newer = best.as_ref().is_none_or(|b| {
-                        matches!((crate::version::DebVersion::parse(&c.version), crate::version::DebVersion::parse(&b.version)), (Ok(n), Ok(o)) if n > o)
-                    });
-                    if newer {
-                        best = Some(c);
-                    }
-                }
-            }
-            let Some(c) = best else {
-                bail!("apt repository {repository} has no {package} for {arch}");
-            };
-            Ok(Latest {
-                version: Some(c.version),
-                url: Some(format!("{}/{}", repo.url.trim_end_matches('/'), c.filename.trim_start_matches("./"))),
-                checksum: c.sha256.as_deref().and_then(Checksum::from_hex),
-                head: None,
-            })
+            apt_latest_in(&fetched.indexes, repository, repo, package.as_deref().unwrap_or(app))
         }
         SourceConfig::Github { repo, asset, prerelease } => {
             let token = std::env::var("PACDEB_GITHUB_TOKEN").ok().filter(|t| !t.is_empty());

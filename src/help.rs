@@ -8,19 +8,24 @@ Usage: pacdeb <command> [options]
 Working with a .deb file:
   inspect <file.deb>            Show what is in a deb and how it would convert
   convert <file.deb>            Build a pacman package without installing it
-  install <file.deb|app>        Build and install with sudo pacman -U
 
-Keeping apps updated:
+Like apt:
+  update                        Check every source for new versions, download nothing
+  upgrade [app]                 Build and install everything newer
+  install <name|file.deb>       Install a tracked app, a built in one, or any
+                                package from the saved apt repositories
+  search <words>                Search the packages in the saved apt repositories
+  list [--upgradable]           Show tracked apps, or only those with updates
+
+Managing apps and sources:
   add <app>                     Track an app (proton-mail, example-app built in)
   set [app]                     Change a tracked app, or the global channel
-  list                          Show tracked apps and their versions
-  check [app]                   Report available updates, download nothing
+  remove <app>                  Stop tracking an app (does not uninstall it)
+  check [app]                   Ask the sources now, without remembering the answer
   apt list|add|show|edit|key|remove|packages
                                 Manage saved apt repositories
   packages <app|repository>     List everything in an apt repository
-  update [app]                  Download, build and install anything newer
-  remove <app>                  Stop tracking an app (does not uninstall it)
-  timer enable|disable|status   Check on a schedule and notify about updates
+  timer enable|disable|status   Update on a schedule and notify about new versions
   repo init|status|remove       Publish builds to a local pacman repository
 
 Run 'pacdeb help <command>' or 'pacdeb <command> --help' for details.
@@ -63,20 +68,32 @@ Options:
 ";
 
 const INSTALL: &str = "\
-Usage: pacdeb install <file.deb|app> [--direct]
+Usage: pacdeb install <name|name/repository|file.deb> [--direct]
 
-Builds a package and installs it with 'sudo pacman -U'. You see the sudo prompt
-and pacman's own confirmation.
+Builds a package and installs it with 'sudo pacman -U', like 'apt install'.
+You see the sudo prompt and pacman's own confirmation.
 
-  <file.deb>   Convert this file. If no tracked app has its package name, it is
-               tracked as a manual app so 'list' and 'update' know about it.
-  <app>        Install the newest version from a tracked app's source, reusing
-               the last build when it is already current.
+  <name>             A tracked app: its newest version (reusing the last build
+                     when it is current). A built in app (see 'pacdeb add'): it is
+                     tracked, then installed. Otherwise the newest package of that
+                     name in any saved apt repository, which is then tracked.
+  <name/repository>  That package from that saved apt repository.
+  <file.deb>         Convert this file. If no tracked app has its package name, it
+                     is tracked as a manual app so 'list' and 'upgrade' know it.
 
 Options:
   --direct     Write the package directly instead of running makepkg
 
 If pacman fails, the built package stays in the cache and its path is printed.
+";
+
+const SEARCH: &str = "\
+Usage: pacdeb search <words>
+
+Lists the packages in the saved apt repositories whose name or description
+contains every word, with their repository and newest version, and the built in
+apps that match. Uses the package lists from the last 'pacdeb update'.
+Install one with 'pacdeb install <name>' or 'pacdeb install <name>/<repository>'.
 ";
 
 const ADD: &str = "\
@@ -102,7 +119,7 @@ Sources:
     --key-url <url> [--key-fingerprint <fpr>]  or  --key <file>
   github   Release assets on GitHub
     --repo <owner/name>  --asset <pattern, e.g. *_amd64.deb>  [--prerelease]
-  manual   No source; update with 'pacdeb update <app> --file <deb>'
+  manual   No source; upgrade with 'pacdeb upgrade <app> --file <deb>'
 
 Options for any app:
   --channel <name>           Release channel, filled in for {channel} in any value
@@ -127,32 +144,45 @@ their own. Proton Mail's channels are Stable, EarlyAccess and Alpha.
 ";
 
 const LIST: &str = "\
-Usage: pacdeb list
+Usage: pacdeb list [--upgradable]
 
 Shows each tracked app with its source, channel, the last version pacdeb built,
-and the version pacman has installed.
+and the version pacman has installed. With --upgradable, only the apps whose
+source offered something newer at the last 'pacdeb update'.
 ";
 
 const CHECK: &str = "\
 Usage: pacdeb check [app] [--notify]
 
-Asks each app's source (or just this app's) for its newest version and
-compares it with what pacdeb last built. Downloads no debs.
+Asks each app's source (or just this app's) for its newest version now and
+prints it, without remembering the answer. 'pacdeb update' does the same for
+every app and also refreshes the apt package lists. Downloads no debs.
 
 Options:
   --notify   Also send a desktop notification when the updates found differ
-             from the last ones notified about (the timer uses this)
+             from the last ones notified about
 ";
 
 const UPDATE: &str = "\
-Usage: pacdeb update [app] [--file <file.deb>] [--no-install] [--direct]
+Usage: pacdeb update
 
-Downloads anything newer, checks its checksum, builds it, and installs all new
-packages with one 'sudo pacman -U'. Without an app name, updates every tracked app.
+Like 'apt update': reads every saved apt repository (checking its signature and
+keeping its package lists for search and install) and asks every tracked app's
+source for its newest version. Remembers what it found and says which apps can
+be upgraded. Downloads no debs. Run 'pacdeb upgrade' to install them.
+";
+
+const UPGRADE: &str = "\
+Usage: pacdeb upgrade [app] [--file <file.deb>] [--no-install] [--direct]
+
+Like 'apt upgrade': downloads what is newer, checks its checksum, builds it, and
+installs all new packages with one 'sudo pacman -U'. Uses what the last
+'pacdeb update' found (asking the source again when that is over a day old).
+Without an app name, upgrades every tracked app.
 
 Options:
   --file <file.deb>  Use this deb for the app instead of downloading
-                     (how manual apps are updated)
+                     (how manual apps are upgraded)
   --no-install       Build only
   --direct           Write packages directly instead of running makepkg
 
@@ -176,7 +206,7 @@ user timer in ~/.config/systemd/user (no root needed).
 With a repository (see 'pacdeb help repo'), new versions are downloaded and built
 in the background and published there, and a notification says they are ready;
 your normal system update installs them. Without one, you get a notification
-whose Update button opens a terminal running 'pacdeb update'. Each set of
+whose Upgrade button opens a terminal running 'pacdeb upgrade'. Each set of
 updates is announced once.
 
   enable    Turn scheduled checks on
@@ -268,6 +298,8 @@ pub fn page(command: &str) -> Option<&'static str> {
         "list" => LIST,
         "check" => CHECK,
         "update" => UPDATE,
+        "upgrade" => UPGRADE,
+        "search" => SEARCH,
         "remove" => REMOVE,
         "timer" => TIMER,
         "repo" => REPO,
@@ -281,7 +313,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt", "upgrade", "search"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {
