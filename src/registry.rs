@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Context, Result};
 
-const PRESETS: &str = include_str!("../data/presets.toml");
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -306,16 +304,6 @@ fn move_inline_apt_sources(config: &mut toml::Table) {
                 k
             }
             None => {
-                // A repository a preset knows gets the preset's key link and pinned fingerprint.
-                let url = text("repo").unwrap_or_default();
-                let known = presets().into_values().filter_map(|p| p.apt).find(|a| a.url.trim_end_matches('/') == url.trim_end_matches('/'));
-                if let Some(a) = known {
-                    for (k, v) in [("key_url", a.key_url), ("key_fingerprint", a.key_fingerprint)] {
-                        if let Some(v) = v {
-                            repo.insert(k.into(), Value::String(v));
-                        }
-                    }
-                }
                 let mut k = name.clone();
                 while saved.contains_key(&k) {
                     k.push_str("-repo");
@@ -413,32 +401,6 @@ impl State {
     }
 }
 
-/// A preset: a ready made source for a known app.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Preset {
-    pub source: SourceConfig,
-    /// For apt presets: the repository, saved under the name the source gives it.
-    #[serde(default)]
-    pub apt: Option<AptRepoConfig>,
-    #[serde(default)]
-    pub note: Option<String>,
-}
-
-/// The built in app `name` refers to: by its own name, or by the package it installs
-/// (google-chrome-stable for google-chrome).
-pub fn preset_for(name: &str) -> Option<String> {
-    let all = presets();
-    if all.contains_key(name) {
-        return Some(name.to_string());
-    }
-    all.into_iter().find(|(_, p)| matches!(&p.source, SourceConfig::Apt { package: Some(pkg), .. } if pkg == name)).map(|(k, _)| k)
-}
-
-pub fn presets() -> BTreeMap<String, Preset> {
-    toml::from_str(PRESETS).expect("data/presets.toml is checked by tests")
-}
-
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).context(dir.display())?;
@@ -452,6 +414,20 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A direct source with channels, like Proton Mail's version feed.
+    fn proton_like() -> SourceConfig {
+        SourceConfig::Direct {
+            url: None,
+            feed: Some("https://example.com/version.json".into()),
+            version_json: Some("Releases[CategoryName={channel}].Version".into()),
+            version_pattern: None,
+            version_regex: None,
+            url_json: Some("Releases[CategoryName={channel}].Url".into()),
+            checksum_json: None,
+            default_channel: Some("Stable".into()),
+        }
+    }
+
     fn dir(name: &str) -> PathBuf {
         let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox/test-registry").join(name);
         let _ = fs::remove_dir_all(&d);
@@ -463,7 +439,7 @@ mod tests {
         let d = dir("roundtrip");
         let mut c = Config::default();
         c.settings.channel = Some("Stable".into());
-        let mut app = App::new(presets()["proton-mail"].source.clone());
+        let mut app = App::new(proton_like());
         app.channel = Some("EarlyAccess".into());
         app.provides = vec!["proton-mail-bin".into()];
         c.apps.insert("proton-mail".into(), app);
@@ -485,7 +461,7 @@ mod tests {
     #[test]
     fn picks_the_channel() {
         let mut c = Config::default();
-        let mut app = App::new(presets()["proton-mail"].source.clone());
+        let mut app = App::new(proton_like());
         assert_eq!(c.channel(&app).as_deref(), Some("Stable"));
         c.settings.channel = Some("EarlyAccess".into());
         assert_eq!(c.channel(&app).as_deref(), Some("EarlyAccess"));
@@ -501,24 +477,6 @@ mod tests {
         assert!(toml::from_str::<Config>(bad).is_err());
         let bad = "[apps.x]\nchanel = \"Stable\"\n[apps.x.source]\ntype = \"manual\"\n";
         assert!(toml::from_str::<Config>(bad).is_err());
-    }
-
-    #[test]
-    fn presets_parse() {
-        let p = presets();
-        assert!(p.contains_key("proton-mail"));
-        assert!(matches!(p["example-app"].source, SourceConfig::Apt { .. }));
-        let apt = p["example-app"].apt.as_ref().unwrap();
-        assert_eq!(apt.key_fingerprint.as_deref(), Some("A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"));
-        assert_eq!(apt.components, ["main"]);
-    }
-
-    #[test]
-    fn finds_built_in_apps_by_package() {
-        let cases = [("google-chrome", Some("google-chrome")), ("google-chrome-stable", Some("google-chrome")), ("spotify-client", Some("spotify")), ("proton-mail", Some("proton-mail")), ("nothing-like-this", None)];
-        for (name, want) in cases {
-            assert_eq!(preset_for(name).as_deref(), want, "{name}");
-        }
     }
 
     #[test]
@@ -546,7 +504,6 @@ type = "manual"
         assert_eq!(repo.url, "https://apt.example.com/app/stable");
         assert_eq!(repo.components, ["main", "beta"]);
         assert_eq!(repo.key.as_deref(), Some("keys/example-app.asc"));
-        assert_eq!(repo.key_fingerprint.as_deref(), Some("A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"), "filled in from the preset");
         assert_eq!(c.apt.len(), 1, "both apps share one repository");
         assert_eq!(c.apps["example-app"].source, SourceConfig::Apt { repository: "example-app".into(), package: Some("example-app".into()) });
         assert_eq!(c.apps["other"].source, SourceConfig::Apt { repository: "example-app".into(), package: None });

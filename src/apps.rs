@@ -6,7 +6,7 @@ use std::process::Command;
 use crate::error::{Result, bail};
 use crate::paths::Paths;
 use crate::aptrepos::{self, KeySource};
-use crate::registry::{App, AppState, AptRepoConfig, Config, SourceConfig, State, presets};
+use crate::registry::{App, AppState, AptRepoConfig, Config, SourceConfig, State};
 use crate::sources::{self, Latest};
 use crate::style::Style;
 use crate::version::DebVersion;
@@ -14,7 +14,6 @@ use crate::version::DebVersion;
 /// Options shared by add and set. Unset fields leave things as they are.
 #[derive(Debug, Default)]
 pub struct Flags {
-    pub preset: Option<String>,
     pub source: Option<String>,
     pub channel: Option<String>,
     pub key: Option<String>,
@@ -63,7 +62,6 @@ pub fn parse_flags(args: &[String]) -> Result<(Vec<String>, Flags)> {
                 };
                 let v = v.clone();
                 match flag {
-                    "--preset" => f.preset = Some(v),
                     "--source" => f.source = Some(v),
                     "--channel" => f.channel = Some(v),
                     "--key" => f.key = Some(v),
@@ -265,44 +263,16 @@ pub fn add_with(name: &str, f: &Flags, hint: bool) -> Result<()> {
     if config.apps.contains_key(name) {
         bail!("{name} is already tracked; change it with 'pacdeb set {name} ...'");
     }
-    let all = presets();
-    let preset_name = f.preset.clone().or_else(|| (f.source.is_none() && all.contains_key(name)).then(|| name.to_string()));
-    let preset = match &preset_name {
-        Some(p) => Some(all.get(p).ok_or_else(|| crate::error::Error::new(format!("no preset named {p}; known: {}", all.keys().cloned().collect::<Vec<_>>().join(", "))))?),
-        None => None,
-    };
     // --apt names a saved repository, so it means an apt source.
     let kind = f.source.clone().or_else(|| f.apt.is_some().then(|| "apt".to_string()));
-    let preset = if kind.is_some() && f.preset.is_none() { None } else { preset };
-    let preset_name = preset.and(preset_name);
-    let mut source = match (&kind, preset) {
-        (Some(kind), _) if kind == "apt" => apt_source(name, f, &mut config, &paths)?,
-        (Some(kind), _) => source_from_flags(kind, f)?,
-        (None, Some(p)) => match (&p.apt, &p.source) {
-            (Some(repo), SourceConfig::Apt { repository, package }) => {
-                let key = KeySource {
-                    file: f.key.clone(),
-                    url: f.key_url.clone().or_else(|| repo.key_url.clone()),
-                    inline: None,
-                    fingerprint: f.key_fingerprint.clone().or_else(|| repo.key_fingerprint.clone()),
-                };
-                let used = aptrepos::save_or_reuse(&mut config, repository, repo.clone(), &key, &paths)?;
-                SourceConfig::Apt { repository: used, package: package.clone() }
-            }
-            _ => p.source.clone(),
-        },
-        (None, None) => bail!(
-            "no preset for {name}; describe its source with --source direct|apt|github|manual (presets: {})",
-            all.keys().cloned().collect::<Vec<_>>().join(", ")
+    let source = match kind.as_deref() {
+        Some("apt") => apt_source(name, f, &mut config, &paths)?,
+        Some(kind) => source_from_flags(kind, f)?,
+        None => bail!(
+            "say where {name} comes from: --apt <saved repository> (see 'pacdeb apt list'), or --source direct|github|manual; \
+             to install a package from a saved repository, 'pacdeb install {name}' is enough"
         ),
     };
-    if kind.is_none() && !matches!(source, SourceConfig::Apt { .. }) {
-        update_source(&mut source, f)?;
-    } else if let (None, SourceConfig::Apt { package, .. }) = (&kind, &mut source) {
-        if let Some(p) = &f.package {
-            *package = Some(p.clone());
-        }
-    }
     if has_key_flags(f) && !matches!(source, SourceConfig::Apt { .. }) {
         bail!("--key, --key-url and --key-fingerprint only apply to apt sources");
     }
@@ -312,15 +282,9 @@ pub fn add_with(name: &str, f: &Flags, hint: bool) -> Result<()> {
     let channel = config.channel(&app);
     config.apps.insert(name.to_string(), app);
     config.save(&paths.config)?;
-    match &preset_name {
-        Some(p) => println!("Tracking {name} ({kind} source, from the {p} preset)"),
-        None => println!("Tracking {name} ({kind} source)"),
-    }
+    println!("Tracking {name} ({kind} source)");
     if let Some(c) = channel.filter(|_| config.apps[name].source.uses_channel()) {
         println!("Channel: {c}");
-    }
-    if let Some(note) = preset.and_then(|p| p.note.as_deref()) {
-        println!("{note}");
     }
     if hint {
         println!("Run 'pacdeb install {name}' to install it, or 'pacdeb check {name}' to see the newest version.");
@@ -711,7 +675,16 @@ mod tests {
         assert!(source_from_flags("direct", &f).unwrap_err().to_string().contains("--url, --feed"));
         assert!(source_from_flags("ftp", &f).is_err());
 
-        let mut src = presets()["proton-mail"].source.clone();
+        let mut src = SourceConfig::Direct {
+            url: None,
+            feed: Some("https://example.com/version.json".into()),
+            version_json: Some("Releases[CategoryName={channel}].Version".into()),
+            version_pattern: None,
+            version_regex: None,
+            url_json: Some("Releases[CategoryName={channel}].Url".into()),
+            checksum_json: None,
+            default_channel: Some("Stable".into()),
+        };
         let (_, f) = parse_flags(&args("--asset x")).unwrap();
         assert!(update_source(&mut src, &f).unwrap_err().to_string().contains("--asset does not apply to a direct source"));
     }

@@ -52,9 +52,9 @@ pub fn run(args: &[String]) -> ExitCode {
             [] => usage_error("search", "usage: pacdeb search <words>"),
             words => finish(crate::aptrepos::run_search(&words.join(" "))),
         },
-        "add" => registry_cmd("add", &args[1..], "usage: pacdeb add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
+        "add" => registry_cmd("add", &args[1..], "usage: pacdeb add <name> --apt <repository> | --source <type> [options]", |pos, f| match pos {
             [name] => crate::apps::add(name, f),
-            _ => Err(crate::error::Error::new("usage: pacdeb add <name> [--preset <p> | --source <type>] [options]")),
+            _ => Err(crate::error::Error::new("usage: pacdeb add <name> --apt <repository> | --source <type> [options]")),
         }),
         "set" => registry_cmd("set", &args[1..], "usage: pacdeb set <name> [options], or pacdeb set --channel <name>", |pos, f| match pos {
             [] => crate::apps::set(None, f),

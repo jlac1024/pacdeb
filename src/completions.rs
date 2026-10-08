@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use crate::error::{Result, bail};
 use crate::paths::Paths;
-use crate::registry::{Config, presets};
+use crate::registry::Config;
 use crate::sources::apt_fetch;
 
 /// Commands with a short description, for shells that show one.
@@ -48,10 +48,8 @@ pub fn complete(what: &str) -> Result<()> {
             out.extend(config.apps.values().filter_map(|a| a.pkgname.clone()));
         }
         "repos" => out.extend(config.apt.keys().cloned()),
-        "presets" => out.extend(presets().into_keys().filter(|p| !config.apps.contains_key(p))),
         "installable" => {
             out.extend(config.apps.keys().cloned());
-            out.extend(presets().into_keys());
             // Only the lists already on disk: completing must not wait for the network.
             for name in config.apt.keys() {
                 for (_, index) in apt_fetch::cached_indexes(name, &paths.cache) {
@@ -110,7 +108,6 @@ fn fish() -> String {
          complete -c pacdeb -n '__pacdeb_after upgrade' -l direct -d 'Write packages directly'\n\
          complete -c pacdeb -n '__pacdeb_after upgrade' -l file -r -a '(__fish_complete_suffix .deb)' -d 'Use this deb'\n\
          complete -c pacdeb -n '__pacdeb_after list' -l upgradable -d 'Only apps with updates'\n\
-         complete -c pacdeb -n '__pacdeb_after add' -a '(__pacdeb_names presets)'\n\
          complete -c pacdeb -n '__pacdeb_after add; or __pacdeb_after set' -l apt -r -a '(__pacdeb_names repos)' -d 'Saved apt repository'\n\
          complete -c pacdeb -n '__pacdeb_after add; or __pacdeb_after set' -l source -r -a 'direct apt github manual' -d 'Source type'\n\
          complete -c pacdeb -n '__pacdeb_after add; or __pacdeb_after set' -l channel -r -d 'Release channel'\n\
@@ -167,7 +164,7 @@ _pacdeb() {
             if [[ $cur == -* ]]; then words="--file --direct --no-install"; else words=$(_pacdeb_names apps); fi ;;
         list) words="--upgradable" ;;
         add)
-            if [[ $cur == -* ]]; then words="--apt --source --channel --package --pkgname --preset"; else words=$(_pacdeb_names presets); fi ;;
+            words="--apt --source --channel --package --pkgname" ;;
         packages) words="$(_pacdeb_names apps) $(_pacdeb_names repos)" ;;
         apt)
             if [[ $COMP_CWORD -eq 2 ]]; then
@@ -208,7 +205,6 @@ fn zsh() -> String {
          \x20   install) compadd -- ${{(f)\"$(_pacdeb_names installable)\"}}; _files -g '*.deb' ;;\n\
          \x20   inspect|convert) _files -g '*.deb' ;;\n\
          \x20   remove|untrack|accept|check|set|upgrade) compadd -- ${{(f)\"$(_pacdeb_names apps)\"}} ;;\n\
-         \x20   add) compadd -- ${{(f)\"$(_pacdeb_names presets)\"}} ;;\n\
          \x20   list) compadd -- --upgradable ;;\n\
          \x20   packages) compadd -- ${{(f)\"$(_pacdeb_names apps)\"}} ${{(f)\"$(_pacdeb_names repos)\"}} ;;\n\
          \x20   apt)\n      if (( CURRENT == 3 )); then compadd -- {}\n      else compadd -- ${{(f)\"$(_pacdeb_names repos)\"}}; fi ;;\n\

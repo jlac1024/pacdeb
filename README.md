@@ -11,11 +11,14 @@ repository set up, your usual system update (the CachyOS updater, Shelly or
 `pacman -Syu`) installs new versions too.
 
 ```
+# once: save a vendor's apt repository, from the line in their install instructions
+pacdeb apt add --line 'deb https://example.com/apt stable main' --key-url https://example.com/key.asc
+
+pacdeb search editor           # search your saved repositories
+pacdeb install some-app        # install by name
 pacdeb update                  # check every source for new versions
 pacdeb upgrade                 # build and install everything newer
-pacdeb install example-app  # install by name
-pacdeb search editor           # search your saved apt repositories
-pacdeb remove proton-mail      # uninstall
+pacdeb remove some-app         # uninstall
 ```
 
 There is also an app, **pacdeb-gui**, that does the same with a window.
@@ -61,19 +64,16 @@ around them, linking both into `~/.local/bin`. `packaging/PKGBUILD` is the recip
 |---|---|
 | `update` | Checks every source and saved apt repository for new versions and says what can be upgraded. Downloads no packages. |
 | `upgrade [app]` | Downloads, builds and installs everything newer, with one `sudo pacman -U`. |
-| `install <name>` | Installs a tracked app, a built in one (`proton-mail`, `example-app`), or the newest package of that name in your saved apt repositories, and starts tracking it. `name/repository` picks the repository. |
+| `install <name>` | Installs a tracked app, or the newest package of that name in your saved apt repositories and starts tracking it. `name/repository` picks the repository. |
 | `install <file.deb>` | Converts and installs a deb you downloaded. |
 | `search <words>` | Searches the packages in your saved apt repositories. |
 | `list [--upgradable]` | Shows tracked apps with their built and installed versions. |
 | `remove <app>...` | Uninstalls with `sudo pacman -R` and stops tracking. |
 | `untrack <app>` | Stops tracking an app but leaves it installed. |
 
-Fifteen apps are built in and install by name with nothing set up first:
-`proton-mail`, `example-app`, `google-chrome`, `microsoft-edge`, `brave`, `signal`,
-`element`, `spotify`, `1password`, `mullvad-vpn`, `discord`, `zoom`, `obsidian`,
-`bitwarden` and `rustdesk`. For the ones from apt repositories, pacdeb adds the
-vendor's repository and key itself, and checks the key against the fingerprint the
-vendor publishes where there is one (Google, Microsoft, 1Password).
+pacdeb comes with no apps or repositories of its own: you add the apt repositories
+and download sources you trust (see below), and from then on it keeps those apps
+updated.
 
 pacdeb never asks for or stores your password. Installing and removing run `sudo pacman`
 in your terminal, so you see the usual sudo prompt and pacman's own confirmation. If
@@ -151,8 +151,8 @@ version, install the older one with `sudo pacman -U <package>`.
 - **Apps**: tracked apps and their versions, with Update, Upgrade all, and an Upgrade
   button on each app that has a new version. Apps can be added, edited, uninstalled or
   untracked.
-- **Search**: every package in your saved apt repositories and the built in apps, each
-  with an Install button.
+- **Search**: every package in your saved apt repositories, each with an Install
+  button.
 - **Sources**: saved apt repositories with their health, to browse, manage or add (by
   pasting the vendor's apt line), plus the feeds and GitHub projects apps come from.
 - **Convert**: open or drop a `.deb` to see what pacdeb would build from it, then build
@@ -193,7 +193,9 @@ behave the same.
 
 pacdeb works best for desktop apps that bring what they need with them: Electron apps,
 Chromium-based browsers, and apps that bundle their own libraries. It has been tested
-with all fifteen built in apps, VS Code and Chrome Remote Desktop. Things to know:
+with Proton Mail, Google Chrome, Microsoft Edge, Brave, Signal, Element,
+Spotify, 1Password, Mullvad VPN, Discord, Zoom, Obsidian, Bitwarden, RustDesk, VS Code
+and Chrome Remote Desktop. Things to know:
 
 - **It does not run Debian's install scripts.** It reads them and turns the steps it
   understands into parts of the package. Steps it does not understand are skipped and

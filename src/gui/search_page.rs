@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Search tab: every package in the saved apt repositories (from the lists the last
-//! Update fetched) and the built in apps, each installable with one click, like
-//! 'pacdeb search' and 'pacdeb install'.
+//! Update fetched), each installable with one click, like 'pacdeb search' and
+//! 'pacdeb install'.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,7 +10,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use pacdeb::aptrepos::{self, Found};
 use pacdeb::paths::Paths;
-use pacdeb::registry::{Config, presets};
+use pacdeb::registry::Config;
 
 use crate::sources_page::plain_row;
 use crate::{Ctx, run};
@@ -88,7 +88,7 @@ fn render(ctx: &Rc<Ctx>, page: &Rc<Page>) {
         let text = if config.apt.is_empty() {
             "Search finds packages in your saved apt repositories. None are saved yet; add one on the Sources page."
         } else {
-            "Type to search the packages in your apt repositories and the built in apps. Update on the Apps page refreshes the lists."
+            "Type to search the packages in your apt repositories. Update on the Apps page refreshes the lists."
         };
         page.status.set_label(text);
         return;
@@ -100,12 +100,6 @@ fn render(ctx: &Rc<Ctx>, page: &Rc<Page>) {
     };
     let hits = aptrepos::search(&all, &query);
     let tracked = aptrepos::tracked_packages(&config);
-    let presets: Vec<String> = presets().into_keys().filter(|p| p.contains(&query.to_lowercase()) && !config.apps.contains_key(p)).collect();
-    for p in &presets {
-        let row = plain_row(p, "built in app");
-        row.add_suffix(&install_button(ctx, p.clone()));
-        page.list.append(&row);
-    }
     for f in hits.iter().take(SHOWN) {
         let row = plain_row(&f.package.name, &format!("{} · {} · {}", f.repo, f.package.version, f.package.summary));
         if tracked.contains(&(f.repo.clone(), f.package.name.clone())) {
@@ -115,7 +109,7 @@ fn render(ctx: &Rc<Ctx>, page: &Rc<Page>) {
         }
         page.list.append(&row);
     }
-    let total = hits.len() + presets.len();
+    let total = hits.len();
     page.list.set_visible(total > 0);
     page.status.set_label(&match total {
         0 => format!("Nothing matches '{query}'. Update on the Apps page refreshes the package lists."),
