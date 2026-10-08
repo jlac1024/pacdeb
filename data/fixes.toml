@@ -11,6 +11,13 @@
 #   [[<pkg>.files]]  files to add, or to replace when the deb ships them:
 #                    path, content, mode (octal string, default "644"), why
 
+# Chrome Remote Desktop: these fixes get the host running, but it still is not a good
+# fit for Arch, and the README says so. Known issues:
+#   - It cannot show the desktop you are logged in to, only a separate new session in
+#     a virtual display (live sharing needs GNOME 49+ with GDM).
+#   - That session needs an X11 desktop; on KDE Plasma, plasma-x11-session.
+#   - A second session of the same desktop for the same user conflicts with the first.
+#   - Xvfb has no GPU acceleration, so the remote session is slow for anything heavy.
 [chrome-remote-desktop]
 replace_note = true
 install_note = [
