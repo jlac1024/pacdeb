@@ -11,10 +11,26 @@
 #      fish, bash and zsh
 # Steps already done are skipped, so it is safe to run again. sudo is used only for
 # the steps that need root. 'setup.sh --remove' undoes all of it.
+#
+# Installed as the pacdeb package (which install.sh does), this script is
+# /usr/bin/pacdeb-setup. The package then provides steps 6 and 7 itself, and the
+# script removes the copies an earlier run from the source folder made in your home.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-pacdeb="${PACDEB_BIN:-$root/deploy/pacdeb}"
+# Installed as a package, or run from the source folder.
+if [[ -n "${PACDEB_PACKAGED-}" ]]; then
+    packaged="$PACDEB_PACKAGED"
+elif pacman -Qq pacdeb &> /dev/null && [[ -x /usr/bin/pacdeb ]]; then
+    packaged=1
+else
+    packaged=0
+fi
+if [[ "$packaged" == 1 ]]; then
+    pacdeb="${PACDEB_BIN:-/usr/bin/pacdeb}"
+else
+    pacdeb="${PACDEB_BIN:-$root/deploy/pacdeb}"
+fi
 repo_dir="${PACDEB_REPO_DIR:-/var/lib/pacdeb/repo}"
 pacman_conf="${PACMAN_CONF:-/etc/pacman.conf}"
 apps_dir="${PACDEB_APPS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/applications}"
@@ -33,9 +49,39 @@ skip() { printf '    already done\n'; }
 as_root() { if [[ -n "$sudo" ]]; then "$sudo" "$@"; else "$@"; fi; }
 
 if [[ ! -x "$pacdeb" ]]; then
-    echo "$pacdeb is missing. Run build/build.sh first." >&2
+    echo "$pacdeb is missing. Run build/build.sh first, or install.sh to install pacdeb." >&2
     exit 1
 fi
+
+# Removes what a run from the source folder put in the home folder: links into a
+# deploy folder, completion files pacdeb wrote, and a menu entry pointing at deploy.
+remove_folder_copies() {
+    local removed=0
+    for bin in pacdeb pacdeb-gui; do
+        link="$bin_dir/$bin"
+        if [[ -L "$link" && "$(readlink "$link")" == */deploy/$bin ]]; then
+            rm "$link"
+            echo "    removed $link"
+            removed=1
+        fi
+    done
+    for file in "$fish_file" "$bash_file" "$zsh_file"; do
+        if [[ -f "$file" ]] && grep -q "pacdeb completions" "$file"; then
+            rm "$file"
+            echo "    removed $file"
+            removed=1
+        fi
+    done
+    if [[ -f "$desktop_file" ]] && grep -q "/deploy/pacdeb-gui" "$desktop_file"; then
+        rm "$desktop_file"
+        update-desktop-database "$apps_dir" 2> /dev/null || true
+        echo "    removed $desktop_file"
+        removed=1
+    fi
+    if [[ "$removed" == 0 ]]; then
+        echo "    nothing to remove"
+    fi
+}
 
 fingerprint() {
     "$pacdeb" repo status 2> /dev/null | sed -n 's/^Signing key: //p'
@@ -98,41 +144,48 @@ setup() {
     step "Update timer"
     "$pacdeb" timer enable
 
-    step "Start menu entry"
-    if [[ -x "$root/deploy/pacdeb-gui" ]]; then
-        mkdir -p "$apps_dir"
-        write_desktop_file > "$desktop_file"
-        update-desktop-database "$apps_dir" 2> /dev/null || true
-        echo "    $desktop_file"
+    if [[ "$packaged" == 1 ]]; then
+        step "Menu entry, command and tab completion"
+        echo "    provided by the pacdeb package"
+        remove_folder_copies
     else
-        echo "    skipped: deploy/pacdeb-gui is missing (run build/build.sh)"
-    fi
-
-    step "pacdeb command and tab completion"
-    mkdir -p "$bin_dir"
-    for bin in pacdeb pacdeb-gui; do
-        target="$root/deploy/$bin"
-        link="$bin_dir/$bin"
-        if [[ -e "$link" && ! -L "$link" ]]; then
-            echo "    $link exists and is not pacdeb's link; left as it is"
-        elif [[ -x "$target" ]]; then
-            ln -sfn "$target" "$link"
-            echo "    $link"
+        step "Start menu entry"
+        if [[ -x "$root/deploy/pacdeb-gui" ]]; then
+            mkdir -p "$apps_dir"
+            write_desktop_file > "$desktop_file"
+            update-desktop-database "$apps_dir" 2> /dev/null || true
+            echo "    $desktop_file"
+        else
+            echo "    skipped: deploy/pacdeb-gui is missing (run build/build.sh)"
         fi
-    done
-    for shell_file in "fish:$fish_file" "bash:$bash_file" "zsh:$zsh_file"; do
-        shell="${shell_file%%:*}"
-        file="${shell_file#*:}"
-        mkdir -p "$(dirname "$file")"
-        "$pacdeb" completions "$shell" > "$file"
-        echo "    $file"
-    done
-    case ":$PATH:" in
-        *":$bin_dir:"*) ;;
-        *) echo "    note: $bin_dir is not on your PATH; add it to use 'pacdeb' directly" ;;
-    esac
-    echo "    zsh only finds the completion if $(dirname "$zsh_file") is in its fpath"
-    echo "    Open a new terminal for completion to take effect."
+
+        step "pacdeb command and tab completion"
+        mkdir -p "$bin_dir"
+        for bin in pacdeb pacdeb-gui; do
+            target="$root/deploy/$bin"
+            link="$bin_dir/$bin"
+            if [[ -e "$link" && ! -L "$link" ]]; then
+                echo "    $link exists and is not pacdeb's link; left as it is"
+            elif [[ -x "$target" ]]; then
+                ln -sfn "$target" "$link"
+                echo "    $link"
+            fi
+        done
+        for shell_file in "fish:$fish_file" "bash:$bash_file" "zsh:$zsh_file"; do
+            shell="${shell_file%%:*}"
+            file="${shell_file#*:}"
+            mkdir -p "$(dirname "$file")"
+            "$pacdeb" completions "$shell" > "$file"
+            echo "    $file"
+        done
+        case ":$PATH:" in
+            *":$bin_dir:"*) ;;
+            *) echo "    note: $bin_dir is not on your PATH; add it to use 'pacdeb' directly" ;;
+        esac
+        echo "    zsh only finds the completion if $(dirname "$zsh_file") is in its fpath"
+        echo "    Open a new terminal for completion to take effect."
+
+    fi
 
     step "Done"
     echo "pacdeb apps now show up in your system updates once pacman refreshes its"
@@ -146,61 +199,68 @@ remove() {
     step "Update timer"
     "$pacdeb" timer disable
 
-    step "pacdeb command and tab completion"
-    for bin in pacdeb pacdeb-gui; do
-        link="$bin_dir/$bin"
-        # Only links pointing into this pacdeb folder are ours to remove.
-        if [[ -L "$link" && "$(readlink "$link")" == "$root/deploy/$bin" ]]; then
-            rm "$link"
-            echo "    removed $link"
+    if [[ "$packaged" == 1 ]]; then
+        step "Menu entry, command and tab completion"
+        echo "    left to the pacdeb package (removing it takes them away)"
+        remove_folder_copies
+    else
+        step "pacdeb command and tab completion"
+        for bin in pacdeb pacdeb-gui; do
+            link="$bin_dir/$bin"
+            # Only links pointing into this pacdeb folder are ours to remove.
+            if [[ -L "$link" && "$(readlink "$link")" == "$root/deploy/$bin" ]]; then
+                rm "$link"
+                echo "    removed $link"
+            fi
+        done
+        for file in "$fish_file" "$bash_file" "$zsh_file"; do
+            if [[ -f "$file" ]] && grep -q "pacdeb completions" "$file"; then
+                rm "$file"
+                echo "    removed $file"
+            fi
+        done
+
+        step "Start menu entry"
+        if [[ -f "$desktop_file" ]]; then
+            rm "$desktop_file"
+            update-desktop-database "$apps_dir" 2> /dev/null || true
+            echo "    removed"
+        else
+            skip
         fi
-    done
-    for file in "$fish_file" "$bash_file" "$zsh_file"; do
-        if [[ -f "$file" ]] && grep -q "pacdeb completions" "$file"; then
-            rm "$file"
-            echo "    removed $file"
+
+        step "[pacdeb] section in $pacman_conf"
+        if has_section; then
+            as_root cp "$pacman_conf" "$pacman_conf.pacdeb-backup"
+            # Drop the [pacdeb] section, from its header up to the next section or the end,
+            # and the blank lines right before it that setup added.
+            awk '
+                /^[[:space:]]*$/ { if (!drop) blanks = blanks $0 "\n"; next }
+                /^\[pacdeb\][[:space:]]*$/ { drop = 1; blanks = ""; next }
+                /^\[/ { drop = 0 }
+                !drop { printf "%s", blanks; blanks = ""; print }
+                END { if (!drop) printf "%s", blanks }
+            ' "$pacman_conf.pacdeb-backup" \
+                | as_root tee "$pacman_conf" > /dev/null
+            echo "    removed (the previous file is saved as $pacman_conf.pacdeb-backup)"
+        else
+            skip
         fi
-    done
 
-    step "Start menu entry"
-    if [[ -f "$desktop_file" ]]; then
-        rm "$desktop_file"
-        update-desktop-database "$apps_dir" 2> /dev/null || true
-        echo "    removed"
-    else
-        skip
-    fi
+        step "pacman's trust in the key"
+        if [[ -n "$fpr" ]] && as_root "${pacman_key[@]}" --list-keys "$fpr" &> /dev/null; then
+            as_root "${pacman_key[@]}" --delete "$fpr"
+        else
+            skip
+        fi
 
-    step "[pacdeb] section in $pacman_conf"
-    if has_section; then
-        as_root cp "$pacman_conf" "$pacman_conf.pacdeb-backup"
-        # Drop the [pacdeb] section, from its header up to the next section or the end,
-        # and the blank lines right before it that setup added.
-        awk '
-            /^[[:space:]]*$/ { if (!drop) blanks = blanks $0 "\n"; next }
-            /^\[pacdeb\][[:space:]]*$/ { drop = 1; blanks = ""; next }
-            /^\[/ { drop = 0 }
-            !drop { printf "%s", blanks; blanks = ""; print }
-            END { if (!drop) printf "%s", blanks }
-        ' "$pacman_conf.pacdeb-backup" \
-            | as_root tee "$pacman_conf" > /dev/null
-        echo "    removed (the previous file is saved as $pacman_conf.pacdeb-backup)"
-    else
-        skip
-    fi
+        step "Repository"
+        "$pacdeb" repo remove
+        if [[ -d "$repo_dir" ]]; then
+            as_root rm -r "$repo_dir"
+            echo "    deleted $repo_dir"
+        fi
 
-    step "pacman's trust in the key"
-    if [[ -n "$fpr" ]] && as_root "${pacman_key[@]}" --list-keys "$fpr" &> /dev/null; then
-        as_root "${pacman_key[@]}" --delete "$fpr"
-    else
-        skip
-    fi
-
-    step "Repository"
-    "$pacdeb" repo remove
-    if [[ -d "$repo_dir" ]]; then
-        as_root rm -r "$repo_dir"
-        echo "    deleted $repo_dir"
     fi
 
     step "Done"
