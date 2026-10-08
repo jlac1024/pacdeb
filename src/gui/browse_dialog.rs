@@ -1,14 +1,14 @@
-//! Every package in an apt repository, searchable, each one trackable with a click.
+//! Every package in a saved apt repository, searchable, each one trackable with a click.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use pacdeb::browse::{self, AptRepo};
+use pacdeb::aptrepos;
 use pacdeb::paths::Paths;
-use pacdeb::sources::apt::{Listed, host_arch};
+use pacdeb::registry::{Config, SourceConfig};
+use pacdeb::sources::apt::Listed;
 
 use crate::sources_page::plain_row;
 use crate::{Ctx, run};
@@ -16,24 +16,27 @@ use crate::{Ctx, run};
 /// Rows shown at once; big repositories are narrowed down by searching.
 const SHOWN: usize = 200;
 
-pub struct Target {
-    pub repo: AptRepo,
-    pub key: PathBuf,
-    /// Set when the person pinned the key's fingerprint, passed on when tracking.
-    pub fingerprint: Option<String>,
-    /// Packages from this repository that are already tracked.
-    pub tracked: Vec<String>,
-}
-
 struct State {
-    target: Target,
+    repo: String,
     all: RefCell<Vec<Listed>>,
     tracked: RefCell<Vec<String>>,
     list: gtk::ListBox,
     search: gtk::SearchEntry,
 }
 
-pub fn open(ctx: &Rc<Ctx>, target: Target) {
+/// The packages apps already take from saved repository `repo`.
+fn tracked_in(config: &Config, repo: &str) -> Vec<String> {
+    config
+        .apps
+        .iter()
+        .filter_map(|(n, a)| match &a.source {
+            SourceConfig::Apt { repository, package } if repository == repo => Some(package.clone().unwrap_or_else(|| n.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn open(ctx: &Rc<Ctx>, repo: &str) {
     let search = gtk::SearchEntry::builder().placeholder_text("Search packages").hexpand(true).build();
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     let clamp = adw::Clamp::builder().maximum_size(760).child(&list).margin_top(12).margin_bottom(12).margin_start(12).margin_end(12).build();
@@ -45,7 +48,7 @@ pub fn open(ctx: &Rc<Ctx>, target: Target) {
     stack.add_named(&scroll, Some("list"));
     stack.add_named(&failed, Some("failed"));
 
-    let title = adw::WindowTitle::new("Packages", &target.repo.repo);
+    let title = adw::WindowTitle::new(repo, "Reading the package list...");
     let header = adw::HeaderBar::builder().title_widget(&title).build();
     let search_bar = gtk::Box::builder().margin_start(12).margin_end(12).margin_bottom(6).build();
     search_bar.append(&search);
@@ -56,29 +59,32 @@ pub fn open(ctx: &Rc<Ctx>, target: Target) {
     let dialog = adw::Dialog::builder().title("Packages").content_width(760).content_height(620).child(&view).build();
     dialog.present(Some(&ctx.window));
 
-    let tracked = target.tracked.clone();
-    let state = Rc::new(State { target, all: RefCell::new(Vec::new()), tracked: RefCell::new(tracked), list, search: search.clone() });
+    let config = Paths::from_env().and_then(|p| Config::load(&p.config)).unwrap_or_default();
+    let state = Rc::new(State { repo: repo.to_string(), all: RefCell::new(Vec::new()), tracked: RefCell::new(tracked_in(&config, repo)), list, search: search.clone() });
     search.connect_search_changed({
         let (ctx, state) = (ctx.clone(), state.clone());
         move |_| render(&ctx, &state)
     });
 
-    let (repo, key) = (state.target.repo.clone(), state.target.key.clone());
+    let name = repo.to_string();
     let (ctx, state2) = (ctx.clone(), state.clone());
     glib::spawn_future_local(async move {
         let result = gio::spawn_blocking(move || {
             let paths = Paths::from_env().map_err(|e| e.to_string())?;
-            browse::packages(&repo, &key, &paths).map_err(|e| e.to_string())
+            let config = Config::load(&paths.config).map_err(|e| e.to_string())?;
+            let repo = config.apt.get(&name).ok_or_else(|| format!("no apt repository named {name}"))?;
+            Ok::<_, String>((repo.url.clone(), aptrepos::packages(&name, repo, &paths).map_err(|e| e.to_string())?))
         })
         .await;
         match result {
-            Ok(Ok(all)) => {
-                title.set_subtitle(&format!("{} · {} packages", state2.target.repo.repo, all.len()));
+            Ok(Ok((url, all))) => {
+                title.set_subtitle(&format!("{url} · {} packages", all.len()));
                 *state2.all.borrow_mut() = all;
                 render(&ctx, &state2);
                 stack.set_visible_child_name("list");
             }
             Ok(Err(e)) => {
+                title.set_subtitle("");
                 failed.set_description(Some(&glib::markup_escape_text(&e)));
                 stack.set_visible_child_name("failed");
             }
@@ -114,18 +120,7 @@ fn render(ctx: &Rc<Ctx>, state: &Rc<State>) {
 }
 
 fn track(ctx: &Rc<Ctx>, state: &Rc<State>, name: &str) {
-    let t = &state.target;
-    let mut args: Vec<String> = ["add", name, "--source", "apt", "--repo", &t.repo.repo, "--suite", &t.repo.suite, "--component", &t.repo.component]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    if t.repo.arch != host_arch() {
-        args.extend(["--arch".into(), t.repo.arch.clone()]);
-    }
-    args.extend(["--key".into(), t.key.display().to_string()]);
-    if let Some(f) = t.fingerprint.as_ref().and_then(|f| f.split_whitespace().next()) {
-        args.extend(["--key-fingerprint".into(), f.to_string()]);
-    }
+    let args: Vec<String> = ["add", name, "--apt", &state.repo].iter().map(|s| s.to_string()).collect();
     let (ctx2, state, name) = (ctx.clone(), state.clone(), name.to_string());
     run::logged(ctx, &format!("Tracking {name}"), &run::cli(), &args, false, move |log, done| {
         if done.ok {

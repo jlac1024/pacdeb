@@ -16,8 +16,47 @@ const PRESETS: &str = include_str!("../data/presets.toml");
 pub struct Config {
     #[serde(default)]
     pub settings: Settings,
+    /// Saved apt repositories, by name. Apps with an apt source name one of these.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub apt: BTreeMap<String, AptRepoConfig>,
     #[serde(default)]
     pub apps: BTreeMap<String, App>,
+}
+
+/// A saved apt repository.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AptRepoConfig {
+    pub url: String,
+    /// A suite such as "stable", or a flat repository's folder ending in "/" (like "./").
+    pub suite: String,
+    /// Empty for a flat repository.
+    #[serde(default)]
+    pub components: Vec<String>,
+    /// Debian architecture; defaults to the machine's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    /// Signing key, relative to the config dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Where the key is published, for fetching it again when it changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_url: Option<String>,
+    /// The fingerprint the key must have, when pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_fingerprint: Option<String>,
+}
+
+impl AptRepoConfig {
+    /// A flat repository keeps its index next to the packages instead of under dists/.
+    pub fn is_flat(&self) -> bool {
+        self.suite.ends_with('/')
+    }
+
+    /// The same place as `other`: URL, suite and architecture.
+    pub fn same_place(&self, other: &AptRepoConfig) -> bool {
+        self.url.trim_end_matches('/') == other.url.trim_end_matches('/') && self.suite == other.suite && self.arch == other.arch
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -108,19 +147,12 @@ pub enum SourceConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         default_channel: Option<String>,
     },
+    /// A package from a saved apt repository (`[apt.<name>]`).
     Apt {
-        repo: String,
-        suite: String,
-        component: String,
+        repository: String,
         /// The Debian package name; defaults to the app name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         package: Option<String>,
-        /// Debian architecture; defaults to the machine's.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        arch: Option<String>,
-        /// Signing key for the repo, relative to the config dir.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<String>,
     },
     Github {
         /// owner/name
@@ -172,10 +204,33 @@ impl Config {
     pub fn load(config_dir: &Path) -> Result<Config> {
         let path = Config::path(config_dir);
         match fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).context(path.display()),
+            Ok(text) => Config::parse(&text).context(path.display()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e).context(path.display()),
         }
+    }
+
+    fn parse(text: &str) -> std::result::Result<Config, toml::de::Error> {
+        let mut value: toml::Table = toml::from_str(text)?;
+        move_inline_apt_sources(&mut value);
+        toml::Value::Table(value).try_into()
+    }
+
+    /// The saved repository an app's apt source names.
+    pub fn apt_repo(&self, app: &App) -> Option<(&str, &AptRepoConfig)> {
+        match &app.source {
+            SourceConfig::Apt { repository, .. } => self.apt.get_key_value(repository).map(|(k, v)| (k.as_str(), v)),
+            _ => None,
+        }
+    }
+
+    /// The apps that take packages from saved repository `name`.
+    pub fn apps_using(&self, name: &str) -> Vec<&str> {
+        self.apps
+            .iter()
+            .filter(|(_, a)| matches!(&a.source, SourceConfig::Apt { repository, .. } if repository == name))
+            .map(|(n, _)| n.as_str())
+            .collect()
     }
 
     pub fn save(&self, config_dir: &Path) -> Result<()> {
@@ -194,6 +249,88 @@ impl Config {
             .clone()
             .or_else(|| self.settings.channel.clone())
             .or_else(|| app.source.default_channel().map(String::from))
+    }
+}
+
+/// apt sources used to carry the repository inline (repo, suite, component, arch, key).
+/// Each becomes a saved repository named after its app, or joins an existing saved one
+/// for the same place, and the source then names it. Runs on every load, so files
+/// written by older versions keep working until they are saved again.
+fn move_inline_apt_sources(config: &mut toml::Table) {
+    use toml::Value;
+    let Some(Value::Table(apps)) = config.get("apps").cloned() else {
+        return;
+    };
+    let mut saved = match config.get("apt") {
+        Some(Value::Table(t)) => t.clone(),
+        _ => toml::Table::new(),
+    };
+    let mut new_apps = apps.clone();
+    for (name, app) in &apps {
+        let Some(source) = app.get("source").and_then(Value::as_table) else {
+            continue;
+        };
+        if source.get("type").and_then(Value::as_str) != Some("apt") || !source.contains_key("repo") {
+            continue;
+        }
+        let text = |k: &str| source.get(k).and_then(Value::as_str).map(String::from);
+        let mut repo = toml::Table::new();
+        repo.insert("url".into(), Value::String(text("repo").unwrap_or_default()));
+        repo.insert("suite".into(), Value::String(text("suite").unwrap_or_default()));
+        let component = text("component").unwrap_or_else(|| "main".into());
+        repo.insert("components".into(), Value::Array(vec![Value::String(component.clone())]));
+        for k in ["arch", "key"] {
+            if let Some(v) = text(k) {
+                repo.insert(k.into(), Value::String(v));
+            }
+        }
+        let place = |t: &toml::Table| {
+            let s = |k: &str| t.get(k).and_then(Value::as_str).map(|v| v.trim_end_matches('/').to_string());
+            (s("url"), s("suite"), s("arch"))
+        };
+        let existing = saved.iter().find(|(_, v)| v.as_table().is_some_and(|t| place(t) == place(&repo))).map(|(k, _)| k.clone());
+        let repo_name = match existing {
+            Some(k) => {
+                // Same place: make sure its components include this one.
+                if let Some(Value::Array(cs)) = saved.get_mut(&k).and_then(|v| v.as_table_mut()).and_then(|t| t.get_mut("components")) {
+                    if !cs.iter().any(|c| c.as_str() == Some(component.as_str())) {
+                        cs.push(Value::String(component));
+                    }
+                }
+                k
+            }
+            None => {
+                // A repository a preset knows gets the preset's key link and pinned fingerprint.
+                let url = text("repo").unwrap_or_default();
+                let known = presets().into_values().filter_map(|p| p.apt).find(|a| a.url.trim_end_matches('/') == url.trim_end_matches('/'));
+                if let Some(a) = known {
+                    for (k, v) in [("key_url", a.key_url), ("key_fingerprint", a.key_fingerprint)] {
+                        if let Some(v) = v {
+                            repo.insert(k.into(), Value::String(v));
+                        }
+                    }
+                }
+                let mut k = name.clone();
+                while saved.contains_key(&k) {
+                    k.push_str("-repo");
+                }
+                saved.insert(k.clone(), Value::Table(repo));
+                k
+            }
+        };
+        let mut new_source = toml::Table::new();
+        new_source.insert("type".into(), Value::String("apt".into()));
+        new_source.insert("repository".into(), Value::String(repo_name));
+        if let Some(p) = text("package") {
+            new_source.insert("package".into(), Value::String(p));
+        }
+        if let Some(Value::Table(a)) = new_apps.get_mut(name) {
+            a.insert("source".into(), Value::Table(new_source));
+        }
+    }
+    config.insert("apps".into(), Value::Table(new_apps));
+    if !saved.is_empty() {
+        config.insert("apt".into(), Value::Table(saved));
     }
 }
 
@@ -243,11 +380,9 @@ impl State {
 #[serde(deny_unknown_fields)]
 pub struct Preset {
     pub source: SourceConfig,
-    /// For apt presets: where the signing key is published, and its fingerprint.
+    /// For apt presets: the repository, saved under the name the source gives it.
     #[serde(default)]
-    pub key_url: Option<String>,
-    #[serde(default)]
-    pub key_fingerprint: Option<String>,
+    pub apt: Option<AptRepoConfig>,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -325,6 +460,46 @@ mod tests {
         let p = presets();
         assert!(p.contains_key("proton-mail"));
         assert!(matches!(p["example-app"].source, SourceConfig::Apt { .. }));
-        assert_eq!(p["example-app"].key_fingerprint.as_deref(), Some("A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"));
+        let apt = p["example-app"].apt.as_ref().unwrap();
+        assert_eq!(apt.key_fingerprint.as_deref(), Some("A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"));
+        assert_eq!(apt.components, ["main"]);
+    }
+
+    #[test]
+    fn moves_inline_apt_sources_into_saved_repositories() {
+        let old = r#"
+[apps.example-app.source]
+type = "apt"
+repo = "https://apt.example.com/app/stable"
+suite = "stable"
+component = "main"
+package = "example-app"
+key = "keys/example-app.asc"
+
+[apps.other.source]
+type = "apt"
+repo = "https://apt.example.com/app/stable/"
+suite = "stable"
+component = "beta"
+
+[apps.tool.source]
+type = "manual"
+"#;
+        let c = Config::parse(old).unwrap();
+        let repo = &c.apt["example-app"];
+        assert_eq!(repo.url, "https://apt.example.com/app/stable");
+        assert_eq!(repo.components, ["main", "beta"]);
+        assert_eq!(repo.key.as_deref(), Some("keys/example-app.asc"));
+        assert_eq!(repo.key_fingerprint.as_deref(), Some("A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"), "filled in from the preset");
+        assert_eq!(c.apt.len(), 1, "both apps share one repository");
+        assert_eq!(c.apps["example-app"].source, SourceConfig::Apt { repository: "example-app".into(), package: Some("example-app".into()) });
+        assert_eq!(c.apps["other"].source, SourceConfig::Apt { repository: "example-app".into(), package: None });
+        assert_eq!(c.apps_using("example-app"), ["example-app", "other"]);
+
+        // Saving writes the new form, which loads back the same.
+        let text = toml::to_string(&c).unwrap();
+        assert!(text.contains("[apt.example-app]"), "{text}");
+        assert!(!text.contains("component = "), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
     }
 }

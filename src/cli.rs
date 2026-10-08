@@ -68,6 +68,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 _ => usage_error("check", "usage: pacdeb check [app] [--notify]"),
             }
         }
+        "apt" => finish(crate::aptrepos::run(&args[1..])),
         "packages" => match &args[1..] {
             [app] if !app.starts_with('-') => finish(crate::browse::run(app)),
             _ => usage_error("packages", "usage: pacdeb packages <app>"),

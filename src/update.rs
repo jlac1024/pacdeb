@@ -97,7 +97,7 @@ pub fn update(opts: &Options) -> Result<()> {
 /// Checks one app, and downloads and builds it when there is something newer.
 fn update_one(name: &str, app: &App, config: &Config, direct: bool, paths: &Paths, state: &mut State) -> Result<Option<Built>> {
     let channel = config.channel(app);
-    let latest = sources::latest(name, &app.source, channel.as_deref(), &paths.config, &paths.cache)?;
+    let latest = sources::latest(name, &app.source, channel.as_deref(), config, &paths.config, &paths.cache)?;
     match status(&latest, state.apps.get(name)) {
         Status::UpToDate(v) => {
             println!("{name}: up to date ({v})");
@@ -211,7 +211,7 @@ pub fn install_app(name: &str, direct: bool) -> Result<()> {
         bail!("{name} has a manual source; install a deb file with 'pacdeb install <file.deb>'");
     }
     let channel = config.channel(app);
-    let latest = sources::latest(name, &app.source, channel.as_deref(), &paths.config, &paths.cache)?;
+    let latest = sources::latest(name, &app.source, channel.as_deref(), &config, &paths.config, &paths.cache)?;
     // Reuse the last build when it is already the newest version under the app's
     // current package name (it may have been renamed since).
     let last = state.apps.get(name).and_then(|s| {

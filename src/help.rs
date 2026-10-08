@@ -15,7 +15,9 @@ Keeping apps updated:
   set [app]                     Change a tracked app, or the global channel
   list                          Show tracked apps and their versions
   check [app]                   Report available updates, download nothing
-  packages <app>                List everything in an app's apt repository
+  apt list|add|show|edit|key|remove|packages
+                                Manage saved apt repositories
+  packages <app|repository>     List everything in an apt repository
   update [app]                  Download, build and install anything newer
   remove <app>                  Stop tracking an app (does not uninstall it)
   timer enable|disable|status   Check on a schedule and notify about updates
@@ -92,11 +94,12 @@ Sources:
     --version-pattern <text>  Simpler form, e.g. app_{version}_amd64.deb
     --url-json <path>         Where the download URL is in a JSON feed
     --checksum-json <path>    Where a sha256 or sha512 is in a JSON feed
-  apt      A Debian package repository
-    --repo <url>  --suite <s>  --component <c>  [--package <p>]  [--arch <a>]
-    --key-url <url>           Signing key to download
-    --key-fingerprint <fpr>   Refuse the key unless it has this fingerprint
-    --key <file>              Use a key file you already have
+  apt      A package from a saved apt repository (see 'pacdeb help apt')
+    --apt <repository>        The saved repository (implies --source apt)
+    --package <p>             The Debian package, if not the app name
+    Or describe a new repository, which is saved under the app's name:
+    --repo <url>  --suite <s>  --component <c>  [--arch <a>]
+    --key-url <url> [--key-fingerprint <fpr>]  or  --key <file>
   github   Release assets on GitHub
     --repo <owner/name>  --asset <pattern, e.g. *_amd64.deb>  [--prerelease]
   manual   No source; update with 'pacdeb update <app> --file <deb>'
@@ -209,12 +212,49 @@ Packages and the database are signed; pacman refuses anything pacdeb did not sig
 ";
 
 const PACKAGES: &str = "\
-Usage: pacdeb packages <app>
+Usage: pacdeb packages <app|repository>
 
-Lists every package in the apt repository a tracked app comes from, with its
-newest version and a short description, after checking the repository's
-signature. Tracked packages are marked with *. Any of them can be tracked too,
-with the 'pacdeb add' line printed at the end.
+Lists every package in a saved apt repository, or the one an app comes from,
+with its newest version and a short description, after checking the
+repository's signature. Tracked packages are marked with *. The same as
+'pacdeb apt packages <repository>'.
+";
+
+const APT: &str = "\
+Usage: pacdeb apt <command> ...
+
+Saved apt repositories. Apps take packages from them by name
+('pacdeb add <package> --apt <repository>'); several apps can share one.
+
+  list
+      Every saved repository, the apps using it, when it was last checked,
+      and warnings (expiring keys, missing components, stale repositories).
+  add [name] --line 'deb [options] <url> <suite> <components...>'
+  add [name] --file <file.list|file.sources>
+  add <name> <url> <suite> <components...>
+      Saves a repository from a vendor's apt line or file. Needs
+      --key-url <url> (pin it with --key-fingerprint <fpr>) or --key <file>,
+      unless a .sources file includes the key. Without a name, one is made
+      from the URL. The repository is checked before it is saved.
+  show <name> [--offline]
+      Details and health: who publishes it, when it was updated and until
+      when its Release file is valid, what it offers, its signing key and
+      when that expires, and which apps use it.
+  edit <name> [--url <url>] [--suite <s>] [--components a,b] [--arch <a>]
+      Changes a repository for every app using it. Saved only if the changed
+      repository works.
+  key <name> [--key-url <url> | --key <file>] [--key-fingerprint <fpr>]
+      Fetches the signing key again (from its saved link when none is given)
+      or replaces it. A pinned fingerprint must still match unless a new one
+      is given, and the repository must be signed by the new key.
+  remove <name> [--with-apps]
+      Deletes a repository. Apps using it must be moved or removed first;
+      --with-apps stops tracking them too.
+  packages <name>
+      Everything the repository offers.
+
+pacdeb refuses a repository whose signed Release file is past its
+Valid-Until date, as apt does.
 ";
 
 /// The help page for a command, or None if there is no such command.
@@ -232,6 +272,7 @@ pub fn page(command: &str) -> Option<&'static str> {
         "timer" => TIMER,
         "repo" => REPO,
         "packages" => PACKAGES,
+        "apt" => APT,
         _ => return None,
     })
 }
@@ -240,7 +281,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {

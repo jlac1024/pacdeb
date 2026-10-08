@@ -30,6 +30,70 @@ pub fn fingerprints(key: &Path, home: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// One public key in a key file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyInfo {
+    pub fingerprint: String,
+    pub uid: Option<String>,
+    pub created: Option<i64>,
+    /// The earliest expiry of the key and its subkeys; a repository signed with an
+    /// expired subkey fails just the same.
+    pub expires: Option<i64>,
+}
+
+/// The keys in a key file, with who they belong to and when they expire.
+pub fn key_info(key: &Path, home: &Path) -> Result<Vec<KeyInfo>> {
+    prepare_home(home)?;
+    let out = Command::new("gpg")
+        .arg("--homedir")
+        .arg(home)
+        .args(["--batch", "--show-keys", "--with-colons", "--fixed-list-mode"])
+        .arg(key)
+        .env("LC_ALL", "C")
+        .output()
+        .context("cannot run gpg")?;
+    if !out.status.success() {
+        bail!("gpg could not read {}: {}", key.display(), String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(parse_key_listing(&String::from_utf8_lossy(&out.stdout)))
+}
+
+fn parse_key_listing(colons: &str) -> Vec<KeyInfo> {
+    let mut keys: Vec<KeyInfo> = Vec::new();
+    // Whether the last pub/sub line still waits for its fpr line (only pub fprs name keys).
+    let mut want_fpr = false;
+    for line in colons.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        let field = |i: usize| f.get(i).copied().filter(|v| !v.is_empty());
+        let time = |i: usize| field(i).and_then(|v| v.parse::<i64>().ok());
+        match f.first().copied() {
+            Some("pub") => {
+                keys.push(KeyInfo { fingerprint: String::new(), uid: None, created: time(5), expires: time(6) });
+                want_fpr = true;
+            }
+            Some("sub") => {
+                if let (Some(k), Some(e)) = (keys.last_mut(), time(6)) {
+                    k.expires = Some(k.expires.map_or(e, |x| x.min(e)));
+                }
+                want_fpr = false;
+            }
+            Some("fpr") if want_fpr => {
+                if let (Some(k), Some(fpr)) = (keys.last_mut(), field(9)) {
+                    k.fingerprint = fpr.to_string();
+                }
+                want_fpr = false;
+            }
+            Some("uid") => {
+                if let Some(k) = keys.last_mut().filter(|k| k.uid.is_none()) {
+                    k.uid = field(9).map(|u| u.replace("\\x3a", ":"));
+                }
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
 /// Checks a clearsigned file like apt's InRelease and returns the signed text.
 pub fn verify_clearsigned(signed: &[u8], key: &Path, home: &Path) -> Result<Vec<u8>> {
     let keyring = write_keyring(key, home)?;
@@ -153,6 +217,23 @@ mod tests {
             assert_eq!(base64_decode(input).unwrap(), want.as_bytes(), "{input}");
         }
         assert!(base64_decode("Zm9v!").is_err());
+    }
+
+    #[test]
+    fn reads_key_listings() {
+        let colons = "pub:-:4096:1:AAAA:1600000000:1900000000::-:::scESC::::::23::0:\n\
+                      fpr:::::::::0123456789ABCDEF0123456789ABCDEF01234567:\n\
+                      uid:-::::1600000000::HASH::Example Repo <repo@example.com>::::::::::0:\n\
+                      sub:-:4096:1:BBBB:1600000000:1800000000:::::s::::::23:\n\
+                      fpr:::::::::FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF:\n\
+                      pub:-:255:22:CCCC:1700000000:::-:::scESC::::::ed25519:::0:\n\
+                      fpr:::::::::9999999999999999999999999999999999999999:\n";
+        let keys = parse_key_listing(colons);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].fingerprint, "0123456789ABCDEF0123456789ABCDEF01234567");
+        assert_eq!(keys[0].uid.as_deref(), Some("Example Repo <repo@example.com>"));
+        assert_eq!((keys[0].created, keys[0].expires), (Some(1_600_000_000), Some(1_800_000_000)), "the subkey expires first");
+        assert_eq!((keys[1].fingerprint.as_str(), keys[1].expires), ("9999999999999999999999999999999999999999", None));
     }
 
     #[test]

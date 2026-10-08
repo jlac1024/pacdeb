@@ -23,7 +23,7 @@ pub fn index_file(release: &str, component: &str, arch: &str) -> Result<IndexFil
     let Some(list) = control.get("SHA256") else {
         bail!("the repository's Release file has no SHA256 list");
     };
-    let base = format!("{component}/binary-{arch}/Packages");
+    let base = if component.is_empty() { "Packages".to_string() } else { format!("{component}/binary-{arch}/Packages") };
     let files: Vec<IndexFile> = list
         .lines()
         .filter_map(|l| {

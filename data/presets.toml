@@ -13,13 +13,16 @@ checksum_json = "Releases[CategoryName={channel}].File[Identifier=.deb (Ubuntu/D
 default_channel = "Stable"
 
 [example-app]
+note = "The apt repository is signed; pacdeb fetched its key and checked it against the vendor's published fingerprint."
+
+[example-app.apt]
+url = "https://apt.example.com/app/stable"
+suite = "stable"
+components = ["main"]
 key_url = "https://apt.example.com/app/key.asc"
 key_fingerprint = "A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"
-note = "The apt repository is signed; pacdeb fetched its key and checked it against the vendor's published fingerprint."
 
 [example-app.source]
 type = "apt"
-repo = "https://apt.example.com/app/stable"
-suite = "stable"
-component = "main"
+repository = "example-app"
 package = "example-app"

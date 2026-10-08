@@ -137,11 +137,14 @@ mod tests {
         let home = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox/test-notify");
         let _ = fs::remove_dir_all(&home);
         let paths = Paths { config: home.join("config"), state: home.join("state"), cache: home.join("cache") };
-        let log = home.join("calls.log");
         fs::create_dir_all(&home).unwrap();
         let stub = home.join("notify-stub.sh");
-        fs::write(&stub, format!("#!/bin/sh\necho \"call $*\" >> '{}'\n", log.display())).unwrap();
-        fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        // The stub is written by a separate shell: a file this process had open for
+        // writing could leak into a process another test starts at that moment, and
+        // running the stub would then fail with "Text file busy".
+        let script = format!("printf '%s\\n' '#!/bin/sh' 'echo \"call $*\" >> \"$0.log\"' > '{0}' && chmod 755 '{0}'", stub.display());
+        assert!(Command::new("sh").args(["-c", &script]).status().unwrap().success());
+        let log = home.join("notify-stub.sh.log");
         let updates = |pending: &[String], paths: &Paths| notify_with(stub.to_str().unwrap(), pending, paths);
         let calls = || fs::read_to_string(&log).unwrap_or_default().lines().filter(|l| l.starts_with("call ")).count();
         let one = vec!["app 1.0 -> 1.1".to_string()];

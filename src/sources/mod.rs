@@ -2,16 +2,18 @@
 //! GitHub releases, or nowhere (manual).
 
 pub mod apt;
+pub mod apt_fetch;
 mod direct;
 mod github;
 pub mod gpg;
 mod jsonpath;
+pub mod release;
 
 use std::path::Path;
 
 use crate::error::{Result, bail};
 use crate::net::{self, Checksum, Head};
-use crate::registry::SourceConfig;
+use crate::registry::{Config, SourceConfig};
 
 pub use apt::host_arch;
 
@@ -26,32 +28,10 @@ pub struct Latest {
     pub head: Option<Head>,
 }
 
-/// Downloads an apt repository's package index for one component and architecture,
-/// after checking the repository's signature with `key` and the index's checksum
-/// against the signed Release file. `gnupg_home` is a scratch folder for gpgv.
-pub fn apt_index(repo: &str, suite: &str, component: &str, arch: &str, key: &Path, gnupg_home: &Path) -> Result<String> {
-    let dists = format!("{}/dists/{suite}", repo.trim_end_matches('/'));
-    let release = match net::get_bytes(&format!("{dists}/InRelease"), &[]) {
-        Ok(signed) => gpg::verify_clearsigned(&signed, key, gnupg_home)?,
-        // Older repositories sign Release separately.
-        Err(e) if net::not_found(&e) => {
-            let data = net::get_bytes(&format!("{dists}/Release"), &[])?;
-            let sig = net::get_bytes(&format!("{dists}/Release.gpg"), &[])?;
-            gpg::verify_detached(&data, &sig, key, gnupg_home)?;
-            data
-        }
-        Err(e) => return Err(e),
-    };
-    let release = String::from_utf8_lossy(&release);
-    let file = apt::index_file(&release, component, arch)?;
-    let raw = net::get_bytes(&format!("{dists}/{}", file.path), &[])?;
-    apt::read_index(&file, &raw)
-}
-
 /// Asks the source what its newest version is. Only feeds and indexes are fetched,
 /// never the deb itself. `config_dir` resolves apt key paths; `cache_dir` holds gpg's
 /// scratch home.
-pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_dir: &Path, cache_dir: &Path) -> Result<Latest> {
+pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config: &Config, config_dir: &Path, cache_dir: &Path) -> Result<Latest> {
     let fill = |s: &str| -> Result<String> {
         if !s.contains("{channel}") {
             return Ok(s.to_string());
@@ -89,22 +69,33 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
             };
             direct::from_feed(&text, &spec)
         }
-        SourceConfig::Apt { repo, suite, component, package, arch, key } => {
-            let Some(key) = key else {
-                bail!("the apt source has no signing key; add one with 'pacdeb set {app} --key-url <url>' or '--key <file>'");
+        SourceConfig::Apt { repository, package } => {
+            let Some(repo) = config.apt.get(repository) else {
+                bail!("the apt repository {repository} is not saved; 'pacdeb apt list' shows the saved ones");
             };
-            let key = config_dir.join(key);
-            let home = cache_dir.join("gnupg").join(app);
-            let repo = repo.trim_end_matches('/');
-            let arch = arch.as_deref().unwrap_or(host_arch());
-            let index = apt_index(repo, suite, component, arch, &key, &home)?;
+            let Some(key) = &repo.key else {
+                bail!("apt repository {repository} has no signing key; add one with 'pacdeb apt key {repository} --key-url <url>'");
+            };
+            let fetched = apt_fetch::fetch(repository, repo, &config_dir.join(key), cache_dir)?;
+            let arch = apt_fetch::arch(repo);
             let package = package.as_deref().unwrap_or(app);
-            let Some(c) = apt::pick(&index, package, arch)? else {
-                bail!("the repository has no {package} for {arch}");
+            let mut best: Option<apt::Candidate> = None;
+            for (_, index) in &fetched.indexes {
+                if let Some(c) = apt::pick(index, package, &arch)? {
+                    let newer = best.as_ref().is_none_or(|b| {
+                        matches!((crate::version::DebVersion::parse(&c.version), crate::version::DebVersion::parse(&b.version)), (Ok(n), Ok(o)) if n > o)
+                    });
+                    if newer {
+                        best = Some(c);
+                    }
+                }
+            }
+            let Some(c) = best else {
+                bail!("apt repository {repository} has no {package} for {arch}");
             };
             Ok(Latest {
                 version: Some(c.version),
-                url: Some(format!("{repo}/{}", c.filename)),
+                url: Some(format!("{}/{}", repo.url.trim_end_matches('/'), c.filename.trim_start_matches("./"))),
                 checksum: c.sha256.as_deref().and_then(Checksum::from_hex),
                 head: None,
             })
@@ -174,10 +165,16 @@ mod tests {
             default_channel: None,
         };
         let tmp = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox");
-        let err = latest("demo", &src, None, &tmp, &tmp).unwrap_err().to_string();
+        let mut config = Config::default();
+        let err = latest("demo", &src, None, &config, &tmp, &tmp).unwrap_err().to_string();
         assert!(err.contains("pacdeb set demo --channel"), "{err}");
-        assert_eq!(latest("demo", &SourceConfig::Manual {}, None, &tmp, &tmp).unwrap(), Latest::default());
-        let apt = SourceConfig::Apt { repo: "r".into(), suite: "s".into(), component: "c".into(), package: None, arch: None, key: None };
-        assert!(latest("demo", &apt, None, &tmp, &tmp).unwrap_err().to_string().contains("no signing key"));
+        assert_eq!(latest("demo", &SourceConfig::Manual {}, None, &config, &tmp, &tmp).unwrap(), Latest::default());
+        let apt = SourceConfig::Apt { repository: "r".into(), package: None };
+        assert!(latest("demo", &apt, None, &config, &tmp, &tmp).unwrap_err().to_string().contains("not saved"));
+        config.apt.insert(
+            "r".into(),
+            crate::registry::AptRepoConfig { url: "u".into(), suite: "s".into(), components: vec![], arch: None, key: None, key_url: None, key_fingerprint: None },
+        );
+        assert!(latest("demo", &apt, None, &config, &tmp, &tmp).unwrap_err().to_string().contains("no signing key"));
     }
 }

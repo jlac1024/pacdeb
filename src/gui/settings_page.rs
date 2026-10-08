@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::glib;
 use pacdeb::paths::Paths;
 use pacdeb::registry::Config;
 
@@ -58,7 +59,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
             loading.set(false);
             match &config.settings.repo {
                 Some(r) => {
-                    repo.set_subtitle(&format!("[{}] in {} · signing key {}", r.name, r.dir, r.key));
+                    repo.set_subtitle(&glib::markup_escape_text(&format!("[{}] in {} · signing key {}", r.name, r.dir, r.key)));
                     let count = std::fs::read_dir(&r.dir).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".pkg.tar.zst")).count()).unwrap_or(0);
                     repo_pkgs.set_subtitle(&format!("{count} published; your system updates install new versions from here"));
                     repo_pkgs.set_visible(true);
@@ -69,7 +70,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
                 }
             }
             for (row, dir) in rows.iter().zip([&paths.config, &paths.state, &paths.cache]) {
-                row.set_subtitle(&dir.display().to_string());
+                row.set_subtitle(&glib::markup_escape_text(&dir.display().to_string()));
             }
         }
     };
