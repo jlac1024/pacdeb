@@ -230,6 +230,7 @@ pub fn translate<R: Read + Seek>(
         }
     }
     apply_actions(&mut nodes, &map, &script_cmds, &name, &contents, &mut changes, &mut warnings);
+    add_lone_launcher(&mut nodes, &mut changes);
     rewrite_pam(&mut nodes, &contents, &mut changes, &mut warnings);
     let services::Note { lines: install_note, warnings: service_warnings } = services::note(&script_cmds, &nodes);
     warnings.extend(service_warnings);
@@ -596,6 +597,24 @@ fn mentioned_paths(control_files: &std::collections::BTreeMap<String, Vec<u8>>) 
     out
 }
 
+/// A launcher shipped outside /usr/share/applications (Discord keeps its .desktop file
+/// in /usr/share/discord) is only seen by menus in that folder. When the package has no
+/// launcher there and exactly one elsewhere, it gets a copy.
+fn add_lone_launcher(nodes: &mut Vec<Node>, changes: &mut Vec<String>) {
+    let is_launcher = |n: &&Node| n.kind == NodeKind::File && n.path.ends_with(".desktop");
+    if nodes.iter().filter(is_launcher).any(|n| pathutil::is_under(&n.path, "/usr/share/applications")) {
+        return;
+    }
+    let elsewhere: Vec<&Node> = nodes.iter().filter(is_launcher).filter(|n| !n.path.starts_with("/etc/xdg/autostart/")).collect();
+    let [only] = elsewhere.as_slice() else {
+        return;
+    };
+    let to = format!("/usr/share/applications/{}", pathutil::basename(&only.path));
+    changes.push(format!("added {to}, a copy of {}, so app menus find the launcher", only.path));
+    let copy = Node { path: to, ..(*only).clone() };
+    nodes.push(copy);
+}
+
 /// Users, groups and memberships for a sysusers.d file. systemd's pacman hook creates
 /// them on install, the Arch way to do what adduser does in a Debian script.
 #[derive(Default)]
@@ -730,7 +749,7 @@ weird-tool --setup
     }
 
     #[test]
-    fn applies_owners_edits_and_touches() {
+    fn applies_owners_edits_touches_and_launchers() {
         let postinst = "#!/bin/sh\n\
             groupadd vendor\n\
             chgrp vendor /opt/Vendor/helper\n\
@@ -764,6 +783,7 @@ weird-tool --setup
         assert_eq!(inline("/usr/lib/systemd/system/vendor.service"), "[Service]\nExecStop=/usr/bin/pkill -f vendor\n");
         assert!(matches!(node("/opt/Vendor/files/vendor.service").source, Source::Deb(_)), "the original stays as shipped");
         assert_eq!((node("/opt/Vendor/.installed").size, inline("/opt/Vendor/.installed").as_str()), (0, ""));
+        assert_eq!(node("/usr/share/applications/vendor.desktop").deb_path(), Some("/usr/share/vendor/vendor.desktop"));
 
         let warnings: Vec<String> = t.warnings.iter().map(ToString::to_string).collect();
         let apt: Vec<&String> = warnings.iter().filter(|w| w.contains("apt repository")).collect();
