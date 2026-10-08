@@ -11,6 +11,15 @@ pub fn build() -> &'static str {
     env!("PACDEB_BUILD")
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_package_recipe_has_this_version() {
+        let pkgbuild = include_str!("../packaging/PKGBUILD");
+        assert!(pkgbuild.contains(&format!("\npkgver={}\n", env!("CARGO_PKG_VERSION"))), "update pkgver in packaging/PKGBUILD");
+    }
+}
+
 pub mod apps;
 pub mod aptline;
 pub mod aptrepos;

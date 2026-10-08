@@ -22,16 +22,15 @@ There is also an app, **pacdeb-gui**, that does the same with a window.
 
 ## Getting started
 
-You need Rust stable (`rustup default stable`). Then, from the project folder:
+From the project folder:
 
 ```
-build/build.sh
-./setup.sh
+./install.sh
 ```
 
-`build/build.sh` builds `deploy/pacdeb` (the command) and `deploy/pacdeb-gui` (the app).
-`./setup.sh` does the one-time system setup, asking for your password only for the
-steps that need root:
+It installs what is needed to build pacdeb (base-devel, git, and Rust through rustup)
+if they are missing, builds pacdeb as a pacman package and runs its tests, installs it
+with `sudo pacman -U`, and then sets up the system with `pacdeb-setup`:
 
 1. Creates the local repository folder, `/var/lib/pacdeb/repo`. It lives outside your
    home folder because pacman downloads as the `alpm` user.
@@ -39,17 +38,22 @@ steps that need root:
 3. Tells pacman to trust that key.
 4. Adds a `[pacdeb]` section to the end of `/etc/pacman.conf`, keeping a backup.
 5. Turns on scheduled update checks.
-6. Adds pacdeb to the app menu and as an "Open with" choice for `.deb` files.
-7. Links `pacdeb` and `pacdeb-gui` into `~/.local/bin` and installs tab completion for
-   fish, bash and zsh.
 
-Steps already done are skipped, so it is safe to run again after an update.
-`./setup.sh --remove` undoes all of it.
+The package puts `pacdeb`, `pacdeb-gui` and `pacdeb-setup` in `/usr/bin`, adds pacdeb
+to the app menu (and as an "Open with" choice for `.deb` files), and installs tab
+completion for fish, bash and zsh. It asks for your password only for the steps that
+need root. To install a newer version, update the source and run `./install.sh` again;
+steps already done are skipped. `./install.sh --uninstall` undoes the setup and
+removes the package, leaving the apps pacdeb installed in place.
 
 At runtime pacdeb uses `makepkg` to build packages (or writes them itself with
-`--direct`, or when makepkg is missing), `sudo` and `pacman` to install and remove,
-`gpg` and `gpgv` to check signatures, and `notify-send` for notifications. All are part
-of a normal CachyOS install. The app needs GTK 4 and libadwaita, which are too.
+`--direct`), `sudo` and `pacman` to install and remove, `gpg` and `gpgv` to check
+signatures, and `notify-send` for notifications. The package depends on all of them.
+
+**Working on pacdeb itself.** `build/build.sh` builds `deploy/pacdeb` and
+`deploy/pacdeb-gui` without installing anything, and `./setup.sh` sets up the system
+around them, linking both into `~/.local/bin`. `packaging/PKGBUILD` is the recipe
+`install.sh` uses.
 
 ## Using it like apt
 
