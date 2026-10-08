@@ -6,7 +6,9 @@ description = "Repackage Debian .deb files as pacman packages and keep them upda
 publish = false
 
 [dependencies]
+adw = { version = "0.9.2", package = "libadwaita", features = ["v1_6"], optional = true }
 flate2 = "1.1.10"
+gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"], optional = true }
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -21,3 +23,16 @@ zstd = "0.14.0"
 lto = true
 codegen-units = 1
 strip = true
+
+[features]
+# pacdeb-gui needs GTK; the command line tool and the tests build without it.
+gui = ["dep:gtk", "dep:adw"]
+
+[[bin]]
+name = "pacdeb"
+path = "src/main.rs"
+
+[[bin]]
+name = "pacdeb-gui"
+path = "src/gui/main.rs"
+required-features = ["gui"]

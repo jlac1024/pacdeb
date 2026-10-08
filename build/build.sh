@@ -8,8 +8,10 @@ cd "$root"
 export CARGO_HOME="$root/build/cargo-home"
 export CARGO_TARGET_DIR="$root/build/target"
 
-cargo build --release "$@"
+cargo build --release --features gui "$@"
 
 mkdir -p "$root/deploy"
-install -m 755 "$CARGO_TARGET_DIR/release/pacdeb" "$root/deploy/pacdeb"
-echo "built deploy/pacdeb"
+for bin in pacdeb pacdeb-gui; do
+    install -m 755 "$CARGO_TARGET_DIR/release/$bin" "$root/deploy/$bin"
+    echo "built deploy/$bin"
+done

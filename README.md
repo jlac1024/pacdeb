@@ -15,12 +15,24 @@ Needs Rust stable (`rustup default stable`).
 build/build.sh
 ```
 
-This puts the binary at `deploy/pacdeb`. Run it with `./run.sh`, or copy it somewhere on
+This puts the command line tool at `deploy/pacdeb` and the app at `deploy/pacdeb-gui`
+(which needs GTK 4 and libadwaita, both part of a normal CachyOS desktop). Run it with `./run.sh`, or copy it somewhere on
 your `PATH`, for example `~/.local/bin`.
 
 At runtime pacdeb uses `makepkg` to build packages (it writes them itself with
 `--direct`, or when makepkg is missing), `sudo` and `pacman` to install, and `gpg` and `gpgv`
 (from the `gnupg` package) to check apt repository signatures.
+
+## The app
+
+`deploy/pacdeb-gui` is a window for the same things: the apps pacdeb tracks and their
+versions, checking and updating, adding and editing sources, converting a .deb you open
+or drop on it, and the settings. `./setup.sh` adds it to the app menu and makes it an
+"Open with" choice for .deb files.
+
+It asks before installing, listing each package and any installed package it replaces,
+then installs through the system's password dialog (pkexec). Everything else runs the
+`pacdeb` command line tool next to it, so both work the same way.
 
 ## Quick start
 
