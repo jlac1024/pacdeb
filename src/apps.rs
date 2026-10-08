@@ -507,6 +507,46 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
+/// The last build's warnings the app has not accepted yet.
+pub fn unaccepted<'a>(app: &App, state: Option<&'a AppState>) -> Vec<&'a crate::registry::RecordedWarning> {
+    state.map(|s| s.warnings.iter().filter(|w| !app.accepted_warnings.contains(&w.key)).collect()).unwrap_or_default()
+}
+
+/// `pacdeb accept <app> [--reset]`: accepts the warnings of the app's last build, so
+/// later builds only show new ones; --reset shows them all again.
+pub fn accept(name: &str, reset: bool) -> Result<()> {
+    let paths = Paths::from_env()?;
+    let mut config = Config::load(&paths.config)?;
+    let state = State::load(&paths.state)?;
+    let Some(app) = config.apps.get_mut(name) else {
+        bail!("{name} is not tracked; 'pacdeb list' shows the tracked apps");
+    };
+    if reset {
+        app.accepted_warnings.clear();
+        config.save(&paths.config)?;
+        println!("{name}: every warning shows again on the next build");
+        return Ok(());
+    }
+    let Some(s) = state.apps.get(name).filter(|s| s.deb_version.is_some()) else {
+        bail!("{name} has not been built yet, so there are no warnings to accept");
+    };
+    let new: Vec<String> = s.warnings.iter().filter(|w| !app.accepted_warnings.contains(&w.key)).map(|w| w.text.clone()).collect();
+    // Only the current warnings are kept: one that went away and comes back is new again.
+    app.accepted_warnings = s.warnings.iter().map(|w| w.key.clone()).collect();
+    config.save(&paths.config)?;
+    match new.len() {
+        0 if s.warnings.is_empty() => println!("{name}'s last build had no warnings"),
+        0 => println!("{name}: all {} were already accepted", crate::human::plural(s.warnings.len(), "warning", "warnings")),
+        n => {
+            println!("{name}: accepted {}:", crate::human::plural(n, "warning", "warnings"));
+            for w in &new {
+                println!("  {w}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `pacdeb list --upgradable`: apps whose source offered something newer at the last
 /// 'pacdeb update'.
 pub fn list_upgradable() -> Result<()> {

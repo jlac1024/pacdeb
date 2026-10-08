@@ -53,6 +53,8 @@ pub struct Built {
     pub pkgrel: u32,
     /// The package name chosen because the deb's name is taken, to remember for the app.
     pub renamed: Option<String>,
+    /// Every warning of this build, accepted or not.
+    pub warnings: Vec<crate::registry::RecordedWarning>,
 }
 
 /// The pkgrel for a new build: 1 for a new upstream version, one more than last time
@@ -149,9 +151,14 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
 
     let p = &t.package;
     println!("Building {} {} from {}", style.bold(&p.name), p.version, deb_path.display());
-    if !t.warnings.is_empty() {
-        print!("\n{}", render_warnings(&t.warnings, style));
+    let accepted = app.map(|a| a.accepted_warnings.as_slice()).unwrap_or_default();
+    let (old, new): (Vec<Warning>, Vec<Warning>) = t.warnings.iter().cloned().partition(|w| accepted.contains(&w.key()));
+    if !new.is_empty() {
+        print!("\n{}", render_warnings(&new, style));
         println!("\n{}\n", style.dim(&format!("Full report: pacdeb convert --dry-run {}", deb_path.display())));
+    }
+    if !old.is_empty() {
+        println!("{}", style.dim(&format!("{} you accepted earlier hidden", human::plural(old.len(), "warning", "warnings"))));
     }
 
     let out_dir = match out {
@@ -164,7 +171,8 @@ pub fn build_package(deb_path: &Path, direct: bool, out: Option<&Path>, app: Opt
         let origin = deb_path.file_name().map_or_else(|| deb_path.display().to_string(), |n| n.to_string_lossy().into_owned());
         build::with_makepkg(&mut deb, p, &origin, &paths.work_dir(), &out_dir)?
     };
-    Ok(Built { path, deb_version: p.deb_version.to_string(), pkgrel: p.version.pkgrel, renamed })
+    let warnings = t.warnings.iter().map(|w| crate::registry::RecordedWarning { key: w.key(), text: w.to_string() }).collect();
+    Ok(Built { path, deb_version: p.deb_version.to_string(), pkgrel: p.version.pkgrel, renamed, warnings })
 }
 
 /// Warnings grouped by kind, with script lines left out for system reasons grouped

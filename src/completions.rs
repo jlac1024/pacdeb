@@ -17,6 +17,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("install", "Install by name or from a .deb file"),
     ("remove", "Uninstall apps and stop tracking them"),
     ("untrack", "Stop tracking an app, keep it installed"),
+    ("accept", "Hide an app's reviewed warnings"),
     ("search", "Search the saved apt repositories"),
     ("list", "Show tracked apps"),
     ("add", "Track an app"),
@@ -104,7 +105,7 @@ fn fish() -> String {
          complete -c pacdeb -n '__pacdeb_after convert' -l direct -d 'Write the package directly'\n\
          complete -c pacdeb -n '__pacdeb_after convert' -l out -r -F -d 'Folder for the package'\n\
          \n# apps\n\
-         complete -c pacdeb -n '__pacdeb_after remove; or __pacdeb_after untrack; or __pacdeb_after upgrade; or __pacdeb_after check; or __pacdeb_after set' -a '(__pacdeb_names apps)'\n\
+         complete -c pacdeb -n '__pacdeb_after remove; or __pacdeb_after untrack; or __pacdeb_after accept; or __pacdeb_after upgrade; or __pacdeb_after check; or __pacdeb_after set' -a '(__pacdeb_names apps)'\n\
          complete -c pacdeb -n '__pacdeb_after upgrade' -l no-install -d 'Build only'\n\
          complete -c pacdeb -n '__pacdeb_after upgrade' -l direct -d 'Write packages directly'\n\
          complete -c pacdeb -n '__pacdeb_after upgrade' -l file -r -a '(__fish_complete_suffix .deb)' -d 'Use this deb'\n\
@@ -160,7 +161,7 @@ _pacdeb() {
         inspect) debs=1 ;;
         convert)
             if [[ $cur == -* ]]; then words="--dry-run --direct --out"; else debs=1; fi ;;
-        remove|untrack|check|set)
+        remove|untrack|accept|check|set)
             words=$(_pacdeb_names apps) ;;
         upgrade)
             if [[ $cur == -* ]]; then words="--file --direct --no-install"; else words=$(_pacdeb_names apps); fi ;;
@@ -206,7 +207,7 @@ fn zsh() -> String {
          \x20 case $words[2] in\n\
          \x20   install) compadd -- ${{(f)\"$(_pacdeb_names installable)\"}}; _files -g '*.deb' ;;\n\
          \x20   inspect|convert) _files -g '*.deb' ;;\n\
-         \x20   remove|untrack|check|set|upgrade) compadd -- ${{(f)\"$(_pacdeb_names apps)\"}} ;;\n\
+         \x20   remove|untrack|accept|check|set|upgrade) compadd -- ${{(f)\"$(_pacdeb_names apps)\"}} ;;\n\
          \x20   add) compadd -- ${{(f)\"$(_pacdeb_names presets)\"}} ;;\n\
          \x20   list) compadd -- --upgradable ;;\n\
          \x20   packages) compadd -- ${{(f)\"$(_pacdeb_names apps)\"}} ${{(f)\"$(_pacdeb_names repos)\"}} ;;\n\

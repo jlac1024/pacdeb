@@ -28,6 +28,7 @@ Managing apps and sources:
   set [app]                     Change a tracked app, or the global channel
   remove <app>...               Uninstall apps and stop tracking them
   untrack <app>                 Stop tracking an app, leave it installed
+  accept <app> [--reset]        Hide an app's reviewed conversion warnings from now on
   check [app]                   Ask the sources now, without remembering the answer
   apt list|add|show|edit|key|remove|packages
                                 Manage saved apt repositories
@@ -209,6 +210,17 @@ Apps that are not installed are only untracked.
 To stop tracking an app but keep it installed, use 'pacdeb untrack <app>'.
 ";
 
+const ACCEPT: &str = "\
+Usage: pacdeb accept <app> [--reset]
+
+Accepts the conversion warnings of the app's last build (unmapped dependencies,
+script lines pacdeb did not translate), once you have read them. Later builds
+show only warnings that are new, and say how many accepted ones they hid. A
+warning that goes away and comes back counts as new.
+
+  --reset   Show every warning again
+";
+
 const UNTRACK: &str = "\
 Usage: pacdeb untrack <app>
 
@@ -322,6 +334,7 @@ pub fn page(command: &str) -> Option<&'static str> {
         "search" => SEARCH,
         "remove" => REMOVE,
         "untrack" => UNTRACK,
+        "accept" => ACCEPT,
         "timer" => TIMER,
         "repo" => REPO,
         "packages" => PACKAGES,
@@ -334,7 +347,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt", "upgrade", "search", "untrack"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt", "upgrade", "search", "untrack", "accept"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {

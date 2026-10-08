@@ -116,6 +116,18 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox) {
             b.connect_clicked(move |_| run::cli_and_install(&ctx, &format!("Upgrading {name}"), &["upgrade", &name]));
             row.add_suffix(&b);
         }
+        let unseen: Vec<String> = apps::unaccepted(app, s).into_iter().map(|w| w.text.clone()).collect();
+        if !unseen.is_empty() {
+            let b = gtk::Button::builder()
+                .label(format!("{} {}", unseen.len(), if unseen.len() == 1 { "warning" } else { "warnings" }))
+                .tooltip_text("Conversion warnings you have not reviewed yet")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat", "warning"])
+                .build();
+            let (ctx, name) = (ctx.clone(), name.clone());
+            b.connect_clicked(move |_| review_warnings(&ctx, &name, &unseen));
+            row.add_suffix(&b);
+        }
         let edit = gtk::Button::builder().icon_name("document-edit-symbolic").tooltip_text("Edit").valign(gtk::Align::Center).css_classes(["flat"]).build();
         edit.connect_clicked({
             let (ctx, name) = (ctx.clone(), name.clone());
@@ -130,6 +142,28 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox) {
         row.add_suffix(&remove);
         list.append(&row);
     }
+}
+
+/// The last build's warnings the person has not accepted, with a button to accept them.
+fn review_warnings(ctx: &Rc<Ctx>, name: &str, warnings: &[String]) {
+    let body = format!("{}\n\nAccepted warnings are hidden on later upgrades; new ones still show.", warnings.join("\n\n"));
+    let alert = adw::AlertDialog::new(Some(&format!("{name}: conversion warnings")), Some(&body));
+    alert.add_response("close", "Close");
+    alert.add_response("accept", "Accept");
+    alert.set_response_appearance("accept", adw::ResponseAppearance::Suggested);
+    alert.set_close_response("close");
+    let (ctx2, name) = (ctx.clone(), name.to_string());
+    alert.connect_response(None, move |_, response| {
+        if response != "accept" {
+            return;
+        }
+        let ctx3 = ctx2.clone();
+        run::quiet(&["accept", &name], move |done| {
+            ctx3.refresh();
+            ctx3.toast(if done.ok { "Accepted; later upgrades show only new warnings" } else { "Could not accept the warnings" });
+        });
+    });
+    alert.present(Some(&ctx.window));
 }
 
 /// Uninstall (like 'pacdeb remove') or only stop tracking ('pacdeb untrack').
