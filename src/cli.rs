@@ -68,6 +68,10 @@ pub fn run(args: &[String]) -> ExitCode {
                 _ => usage_error("check", "usage: pacdeb check [app] [--notify]"),
             }
         }
+        "packages" => match &args[1..] {
+            [app] if !app.starts_with('-') => finish(crate::browse::run(app)),
+            _ => usage_error("packages", "usage: pacdeb packages <app>"),
+        },
         "repo" => match &args[1..] {
             [a] if a == "init" => finish(crate::repo::init(None)),
             [a, dir] if a == "init" && !dir.starts_with('-') => finish(crate::repo::init(Some(dir))),

@@ -3,11 +3,13 @@
 //! behave the same. Installs go through its own confirmation and a polkit prompt.
 
 mod apps_page;
+mod browse_dialog;
 mod convert_page;
 mod install;
 mod run;
 mod settings_page;
 mod source_dialog;
+mod sources_page;
 
 use std::cell::RefCell;
 use std::process::ExitCode;
@@ -59,12 +61,12 @@ fn main() -> ExitCode {
         match a.as_str() {
             "--page" => page = rest.next().cloned(),
             "-h" | "--help" => {
-                println!("Usage: pacdeb-gui [--page apps|convert|settings] [file.deb]");
+                println!("Usage: pacdeb-gui [--page apps|sources|convert|settings] [file.deb]");
                 return ExitCode::SUCCESS;
             }
             _ if !a.starts_with('-') => deb = Some(std::path::PathBuf::from(a)),
             other => {
-                eprintln!("pacdeb-gui: unknown option '{other}'. Usage: pacdeb-gui [--page apps|convert|settings] [file.deb]");
+                eprintln!("pacdeb-gui: unknown option '{other}'. Usage: pacdeb-gui [--page apps|sources|convert|settings] [file.deb]");
                 return ExitCode::from(2);
             }
         }
@@ -99,6 +101,7 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
     let ctx = Rc::new(Ctx { window: window.clone(), toasts, refreshers: RefCell::new(Vec::new()) });
 
     stack.add_titled_with_icon(&apps_page::build(&ctx), Some("apps"), "Apps", "view-list-symbolic");
+    stack.add_titled_with_icon(&sources_page::build(&ctx), Some("sources"), "Sources", "network-server-symbolic");
     let (convert, converter) = convert_page::build(&ctx);
     stack.add_titled_with_icon(&convert, Some("convert"), "Convert", "package-x-generic-symbolic");
     stack.add_titled_with_icon(&settings_page::build(&ctx), Some("settings"), "Settings", "emblem-system-symbolic");
@@ -107,7 +110,7 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
             stack.set_visible_child_name("convert");
             convert_page::show(&converter, path);
         }
-        (None, Some(p)) if ["apps", "convert", "settings"].contains(&p) => stack.set_visible_child_name(p),
+        (None, Some(p)) if ["apps", "sources", "convert", "settings"].contains(&p) => stack.set_visible_child_name(p),
         _ => {}
     }
     window.present();
@@ -118,7 +121,8 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
     }
 }
 
-/// Debug builds only: PACDEB_GUI_OPEN=add | edit:<app> | install:<package file> opens
+/// Debug builds only: PACDEB_GUI_OPEN=add | edit:<app> | install:<package file> |
+/// browse:<app> opens
 /// that dialog at startup, for checking it with PACDEB_GUI_SNAPSHOT.
 #[cfg(debug_assertions)]
 fn open_for_tests(ctx: &Rc<Ctx>) {
@@ -129,6 +133,15 @@ fn open_for_tests(ctx: &Rc<Ctx>) {
         None if what == "add" => source_dialog::open(ctx, None),
         Some(("edit", app)) => source_dialog::open(ctx, Some(app)),
         Some(("install", pkg)) => install::confirm(ctx, vec![std::path::PathBuf::from(pkg)]),
+        Some(("browse", app)) => {
+            let paths = pacdeb::paths::Paths::from_env().expect("paths");
+            let config = pacdeb::registry::Config::load(&paths.config).expect("config");
+            let used = pacdeb::browse::used_repos(&config, &paths).into_iter().find(|u| u.apps.iter().any(|a| a == app));
+            match used.and_then(|u| Some((u.repo, u.key?, u.packages))) {
+                Some((repo, key, tracked)) => browse_dialog::open(ctx, browse_dialog::Target { repo, key, fingerprint: None, tracked }),
+                None => eprintln!("PACDEB_GUI_OPEN: {app} has no apt repository with a key"),
+            }
+        }
         _ => eprintln!("PACDEB_GUI_OPEN: unknown value {what}"),
     }
 }
@@ -150,6 +163,9 @@ fn snapshot_for_tests(window: &adw::ApplicationWindow) {
         };
         let paintable = gtk::WidgetPaintable::new(Some(&content));
         let snapshot = gtk::Snapshot::new();
+        // Pages draw on the window's background, which is not part of the content.
+        let bounds = gtk::graphene::Rect::new(0.0, 0.0, content.width() as f32, content.height() as f32);
+        snapshot.append_color(&gtk::gdk::RGBA::new(0.13, 0.13, 0.15, 1.0), &bounds);
         paintable.snapshot(&snapshot, content.width() as f64, content.height() as f64);
         match (snapshot.to_node(), window.renderer()) {
             (Some(node), Some(renderer)) => {

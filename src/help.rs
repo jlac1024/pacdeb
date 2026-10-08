@@ -15,6 +15,7 @@ Keeping apps updated:
   set [app]                     Change a tracked app, or the global channel
   list                          Show tracked apps and their versions
   check [app]                   Report available updates, download nothing
+  packages <app>                List everything in an app's apt repository
   update [app]                  Download, build and install anything newer
   remove <app>                  Stop tracking an app (does not uninstall it)
   timer enable|disable|status   Check on a schedule and notify about updates
@@ -207,6 +208,15 @@ The folder is outside your home because pacman downloads as the 'alpm' user.
 Packages and the database are signed; pacman refuses anything pacdeb did not sign.
 ";
 
+const PACKAGES: &str = "\
+Usage: pacdeb packages <app>
+
+Lists every package in the apt repository a tracked app comes from, with its
+newest version and a short description, after checking the repository's
+signature. Tracked packages are marked with *. Any of them can be tracked too,
+with the 'pacdeb add' line printed at the end.
+";
+
 /// The help page for a command, or None if there is no such command.
 pub fn page(command: &str) -> Option<&'static str> {
     Some(match command {
@@ -221,6 +231,7 @@ pub fn page(command: &str) -> Option<&'static str> {
         "remove" => REMOVE,
         "timer" => TIMER,
         "repo" => REPO,
+        "packages" => PACKAGES,
         _ => return None,
     })
 }
@@ -229,7 +240,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {

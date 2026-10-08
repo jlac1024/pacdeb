@@ -1,6 +1,7 @@
 //! pacdeb's core, shared by the pacdeb command line tool and pacdeb-gui.
 
 pub mod apps;
+pub mod browse;
 pub mod build;
 pub mod clash;
 pub mod cli;
