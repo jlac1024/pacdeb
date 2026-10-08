@@ -383,6 +383,13 @@ pub fn remove(name: &str) -> Result<()> {
         state.save(&paths.state)?;
     }
     let pkg = app.pkgname.as_deref().unwrap_or(name);
+    if let Some(repo) = &config.settings.repo {
+        match crate::repo::unpublish(pkg, &paths, repo) {
+            Ok(true) => println!("Took {pkg} out of the [{}] repository.", repo.name),
+            Ok(false) => {}
+            Err(e) => println!("warning: could not take {pkg} out of the repository: {e}"),
+        }
+    }
     println!("Stopped tracking {name}. The package stays installed; remove it with 'sudo pacman -R {pkg}' if you want.");
     Ok(())
 }

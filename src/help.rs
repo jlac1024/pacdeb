@@ -18,6 +18,7 @@ Keeping apps updated:
   update [app]                  Download, build and install anything newer
   remove <app>                  Stop tracking an app (does not uninstall it)
   timer enable|disable|status   Check on a schedule and notify about updates
+  repo init [dir] | status      Publish builds to a local pacman repository
 
 Run 'pacdeb help <command>' or 'pacdeb <command> --help' for details.
 
@@ -165,17 +166,40 @@ Stops tracking an app. The installed package stays; remove it with
 const TIMER: &str = "\
 Usage: pacdeb timer enable|disable|status
 
-Runs 'pacdeb check --notify' 5 minutes after login and every 6 hours, using a
-systemd user timer in ~/.config/systemd/user (no root needed). When new versions
-come out you get a notification; its Update button opens a terminal running
-'pacdeb update'. Each set of updates is announced once.
+Runs 'pacdeb timer run' 5 minutes after login and every 6 hours, using a systemd
+user timer in ~/.config/systemd/user (no root needed).
+
+With a repository (see 'pacdeb help repo'), new versions are downloaded and built
+in the background and published there, and a notification says they are ready;
+your normal system update installs them. Without one, you get a notification
+whose Update button opens a terminal running 'pacdeb update'. Each set of
+updates is announced once.
 
   enable    Turn scheduled checks on
   disable   Turn them off and remove the timer
   status    Show whether they are on and when the next check runs
+  run       What the timer runs; can be run by hand
 
 The terminal is $TERMINAL when set, otherwise the first one found (konsole,
 gnome-terminal, alacritty, kitty, foot and others).
+";
+
+const REPO: &str = "\
+Usage: pacdeb repo init [dir]
+       pacdeb repo status
+
+Keeps a local pacman repository of everything pacdeb builds, so pacdeb apps
+update with the rest of the system: pacman -Syu, the CachyOS updater, Shelly and
+AUR helpers all read the repositories in pacman.conf.
+
+  init [dir]   Set up the repository in dir (default /var/lib/pacdeb/repo), make
+               a signing key only pacdeb uses, publish the current builds, and
+               print the steps that tell pacman to trust it. The folder must
+               exist and be yours: sudo install -d -o \"$USER\" -m 755 <dir>
+  status       Show the packages in it and whether pacman.conf lists it
+
+The folder is outside your home because pacman downloads as the 'alpm' user.
+Packages and the database are signed; pacman refuses anything pacdeb did not sign.
 ";
 
 /// The help page for a command, or None if there is no such command.
@@ -191,6 +215,7 @@ pub fn page(command: &str) -> Option<&'static str> {
         "update" => UPDATE,
         "remove" => REMOVE,
         "timer" => TIMER,
+        "repo" => REPO,
         _ => return None,
     })
 }
@@ -199,7 +224,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {

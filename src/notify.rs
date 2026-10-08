@@ -1,6 +1,6 @@
-//! Desktop notifications for `pacdeb check --notify`, which the timer runs. The
-//! notification's Update button opens a terminal running `pacdeb update`, since
-//! installing needs the sudo prompt.
+//! Desktop notifications for the timer. Without a repository it reports updates found,
+//! with an Update button that opens a terminal running `pacdeb update`, since
+//! installing needs the sudo prompt. With one it reports builds ready to install.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,8 +27,30 @@ const TERMINALS: &[(&str, &[&str])] = &[
 /// Notifies about `pending` updates unless they are the ones notified about last time.
 /// No updates clears the memory, so the next one is announced again.
 pub fn updates(pending: &[String], paths: &Paths) -> Result<()> {
-    let program = std::env::var("PACDEB_NOTIFY_CMD").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "notify-send".into());
-    notify_with(&program, pending, paths)
+    notify_with(&program(), pending, paths)
+}
+
+fn program() -> String {
+    std::env::var("PACDEB_NOTIFY_CMD").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "notify-send".into())
+}
+
+/// Says that new versions were built and are ready to install. Each build happens
+/// once, so there is nothing to remember between runs.
+pub fn built(lines: &[String], ready: &str) -> Result<()> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let title = match lines.len() {
+        1 => "pacdeb: 1 update ready".to_string(),
+        n => format!("pacdeb: {n} updates ready"),
+    };
+    let body = format!("{}\n{ready}", lines.join("\n"));
+    let program = program();
+    Command::new(&program)
+        .args(["--app-name=pacdeb", "--icon=system-software-update", &title, &body])
+        .status()
+        .context(format!("cannot run {program} (install libnotify for notifications)"))?;
+    Ok(())
 }
 
 fn notify_with(program: &str, pending: &[String], paths: &Paths) -> Result<()> {
