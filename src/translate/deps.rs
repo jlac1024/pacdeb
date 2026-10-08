@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Debian relationship fields to pacman depends and optdepends.
 
 use std::collections::{HashMap, HashSet};

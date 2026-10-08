@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Turns a .deb into the neutral package model, recording every change and warning.
 
 mod deps;

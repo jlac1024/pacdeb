@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Reading the repository lines vendors publish for apt: one-line `deb ...` entries
 //! (sources.list style) and deb822 `.sources` paragraphs.
 

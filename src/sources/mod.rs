@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Where new versions of an app come from: direct URLs and feeds, apt repositories,
 //! GitHub releases, or nowhere (manual).
 

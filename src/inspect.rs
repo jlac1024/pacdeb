@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `pacdeb inspect`: a readable report on what is inside a .deb.
 
 use std::collections::BTreeMap;

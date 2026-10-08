@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Help pages: one overview and one page per command.
 
 /// The overview with the version on top.

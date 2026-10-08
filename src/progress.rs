@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Progress for long steps (downloads, unpacking, packing). In a terminal it is a bar
 //! redrawn in place on stderr. With PACDEB_PROGRESS=lines it is machine readable lines
 //! for pacdeb-gui:

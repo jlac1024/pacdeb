@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Known fixes for specific debs: files to add or replace, extra optdepends and an
 //! install note. They cover what general translation cannot know, like an app that
 //! hands off to a Debian-only system script.

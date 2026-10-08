@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Version handling: Debian ordering, pacman's vercmp, and the mapping between them.
 
 mod arch;

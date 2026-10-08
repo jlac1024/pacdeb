@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `pacdeb packages <app|repository>`: everything an apt repository offers, by the
 //! repository's name or by an app that comes from it.
 

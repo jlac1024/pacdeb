@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! A tiny path language for picking values out of a JSON feed:
 //! `Releases[CategoryName=Stable].File[Identifier=.deb (Ubuntu/Debian)].Url`.
 //! A segment is a key, optionally followed by `[Field=Value]` (the first array element

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Just enough ELF reading to list a binary's DT_NEEDED libraries.
 
 const PT_LOAD: u32 = 1;

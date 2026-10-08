@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Reading a saved apt repository over the network: its signed Release file, then the
 //! package index of each component, each checked against Release.
 

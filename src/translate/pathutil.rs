@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! String helpers for absolute package paths like "/usr/lib/app/x".
 
 /// The directory containing `path`. "/x" gives "/".

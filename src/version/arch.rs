@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Arch versions (`[epoch:]pkgver-pkgrel`), pacman's vercmp, and the Debian to Arch mapping.
 
 use std::cmp::Ordering;

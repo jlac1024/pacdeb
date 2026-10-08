@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Apt repositories: a signed Release file listing package indexes, and Packages
 //! indexes listing the debs.
 

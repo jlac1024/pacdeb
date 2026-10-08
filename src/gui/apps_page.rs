@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Apps page: tracked apps with their versions; Update (refresh, like apt update)
 //! and Upgrade (build and install what is newer); adding, editing or removing apps.
 

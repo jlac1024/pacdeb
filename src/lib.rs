@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! pacdeb's core, shared by the pacdeb command line tool and pacdeb-gui.
 
 /// The version and the commit it was built from, like "0.2.0 (133ec0e, 2026-10-07)".

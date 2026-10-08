@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # One-time system setup for pacdeb, so its apps update with the rest of the system:
 #   1. the repository folder (outside home, since pacman downloads as the alpm user)
 #   2. the repository and its signing key (pacdeb repo init)

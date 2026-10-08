@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -36,6 +37,7 @@ pub fn run(args: &[String]) -> ExitCode {
         },
         "-V" | "--version" | "version" => {
             println!("pacdeb {}", crate::version());
+            println!("License AGPL-3.0-or-later: free software, with no warranty. See the LICENSE file.");
             ExitCode::SUCCESS
         }
         "inspect" => inspect(&args[1..]),

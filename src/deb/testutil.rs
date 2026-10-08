@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Builds small synthetic .deb files in memory for tests.
 
 use std::io::Write;

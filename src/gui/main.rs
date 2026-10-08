@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! pacdeb-gui: a window over pacdeb. It reads apps and versions through the library and
 //! runs the pacdeb command line tool for anything that changes something, so both
 //! behave the same. Installs go through its own confirmation and a polkit prompt.
@@ -66,6 +67,7 @@ fn main() -> ExitCode {
             "--search" => search = rest.next().cloned(),
             "-V" | "--version" => {
                 println!("pacdeb-gui {}", pacdeb::version());
+                println!("License AGPL-3.0-or-later: free software, with no warranty. See the LICENSE file.");
                 return ExitCode::SUCCESS;
             }
             "-h" | "--help" => {
@@ -151,6 +153,8 @@ fn show_about(window: &adw::ApplicationWindow) {
         .version(env!("CARGO_PKG_VERSION"))
         .comments(format!("Turns Debian .deb packages into pacman packages and keeps them updated, like apt.\n\nBuild {}", pacdeb::build()))
         .developer_name("Jeff")
+        .copyright("© 2026 Jeff")
+        .license_type(gtk::License::Agpl30)
         .build();
     about.present(Some(window));
 }

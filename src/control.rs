@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Parser for a single deb822 paragraph, the format of DEBIAN/control.
 
 use crate::error::{Error, Result, bail};

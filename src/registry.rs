@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The apps pacdeb tracks (apps.toml in the config dir) and what it has built for them
 //! (state.toml in the state dir).
 

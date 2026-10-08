@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Turns the translated model into a .pkg.tar.zst.
 
 mod direct;
@@ -15,7 +16,7 @@ use crate::error::{Context, Result, bail};
 use crate::model::Package;
 
 /// Builds with makepkg. The work dir `<work_root>/<pkgname>` is recreated each time and
-/// keeps the PKGBUILD afterwards for reference; the finished package goes to `out_dir`.
+/// keeps the PKGBUILD afterward for reference; the finished package goes to `out_dir`.
 pub fn with_makepkg<R: Read + Seek>(
     deb: &mut Deb<R>,
     pkg: &Package,
@@ -62,7 +63,7 @@ pub fn with_makepkg<R: Read + Seek>(
     Ok(built)
 }
 
-/// Builds without makepkg: Ferry writes .PKGINFO, .MTREE and the archive itself.
+/// Builds without makepkg: pacdeb writes .PKGINFO, .MTREE and the archive itself.
 pub fn direct<R: Read + Seek>(deb: &mut Deb<R>, pkg: &Package, work_root: &Path, out_dir: &Path) -> Result<PathBuf> {
     let work = work_root.join(&pkg.name);
     remove_tree(&work)?;

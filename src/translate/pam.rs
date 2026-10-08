@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Rewrites Debian PAM service files for Arch. Debian splits its stack into
 //! common-auth, common-account and friends; Arch keeps it in system-auth (from
 //! pambase). A Debian `@include common-auth` on Arch fails to load, which breaks

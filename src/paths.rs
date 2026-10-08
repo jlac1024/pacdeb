@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Where pacdeb keeps its config, state and cache.
 
 use std::ffi::OsString;

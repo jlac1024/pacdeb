@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The apt-like commands. `pacdeb update` refreshes: it reads every saved apt
 //! repository and asks every app's source for its newest version, and remembers what
 //! it found. `pacdeb upgrade` builds and installs whatever is newer, in one pacman call.

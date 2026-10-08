@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! HTTP for feeds, repository indexes and downloads.
 
 use std::fs::{self, File};

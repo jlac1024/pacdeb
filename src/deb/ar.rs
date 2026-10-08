@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Reader for the `ar` container that wraps every .deb.
 
 use std::io::{ErrorKind, Read, Seek, SeekFrom};

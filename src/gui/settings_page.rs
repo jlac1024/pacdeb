@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Settings page: the global channel, scheduled checks, and the local repository.
 
 use std::cell::Cell;

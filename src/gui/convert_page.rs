@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Convert page: open or drop a .deb, read what converting it would do, then build
 //! it or build and install it. Installing an untracked deb starts tracking it, as
 //! `pacdeb install` does.

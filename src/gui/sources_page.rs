@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Sources page: where the tracked apps come from. Saved apt repositories are listed
 //! with their health and can be browsed, managed, and added from a vendor's apt line.
 

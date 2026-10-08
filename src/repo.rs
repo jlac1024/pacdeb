@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The local pacman repository. Every updater on the system (pacman -Syu, the CachyOS
 //! updater, Shelly, AUR helpers) reads the repositories in pacman.conf, so publishing
 //! builds to a repository is how pacdeb updates arrive with the rest. Packages and the

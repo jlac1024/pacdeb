@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Tab completion, like apt's: `pacdeb completions <fish|bash|zsh>` prints a script for
 //! the shell, and the scripts call `pacdeb __complete <what>` for names that change
 //! (tracked apps, saved repositories, installable packages).

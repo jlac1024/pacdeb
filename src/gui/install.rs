@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The GUI's install step. The command line tool hands pacman the packages in a
 //! terminal; the GUI has none, so it shows what will change itself (including
 //! installed packages a conflict removes) and then runs pacman through pkexec, whose

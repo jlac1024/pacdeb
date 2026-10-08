@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Search tab: every package in the saved apt repositories (from the lists the last
 //! Update fetched) and the built in apps, each installable with one click, like
 //! 'pacdeb search' and 'pacdeb install'.

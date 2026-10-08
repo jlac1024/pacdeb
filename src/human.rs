@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Small formatting helpers for CLI output.
 
 pub fn plural(n: usize, one: &str, many: &str) -> String {
