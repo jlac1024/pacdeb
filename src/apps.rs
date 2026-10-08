@@ -384,8 +384,57 @@ pub fn set(name: Option<&str>, f: &Flags) -> Result<()> {
     Ok(())
 }
 
-pub fn remove(name: &str) -> Result<()> {
+/// `pacdeb remove <name>...`, like apt remove: uninstalls with `sudo pacman -R` (pacman
+/// asks to confirm), then stops tracking. If pacman does not remove them, nothing changes.
+/// A name may be an app or its package name.
+pub fn remove(names: &[String]) -> Result<()> {
     let paths = Paths::from_env()?;
+    let config = Config::load(&paths.config)?;
+    let mut targets: Vec<(String, String)> = Vec::new();
+    for n in names {
+        let found = config.apps.iter().find(|(name, app)| *name == n || app.pkgname.as_deref() == Some(n.as_str()));
+        let Some((name, app)) = found else {
+            bail!("{n} is not tracked by pacdeb; 'pacdeb list' shows the tracked apps (other packages are removed with 'sudo pacman -R')");
+        };
+        let pkg = app.pkgname.clone().unwrap_or_else(|| name.clone());
+        if !targets.iter().any(|(t, _)| t == name) {
+            targets.push((name.clone(), pkg));
+        }
+    }
+    let installed: Vec<String> = targets.iter().filter(|(_, p)| is_installed(p)).map(|(_, p)| p.clone()).collect();
+    if !installed.is_empty() {
+        crate::install::uninstall(&installed)?;
+    }
+    for (name, pkg) in &targets {
+        untrack_quietly(name, &paths)?;
+        if installed.contains(pkg) {
+            println!("Removed {pkg}; pacdeb no longer tracks {name}");
+        } else {
+            println!("{pkg} was not installed; pacdeb no longer tracks {name}");
+        }
+    }
+    Ok(())
+}
+
+/// Whether exactly `pkg` is installed. `pacman -Q` also answers for a package that only
+/// provides the name.
+fn is_installed(pkg: &str) -> bool {
+    let Ok(out) = Command::new("pacman").args(["-Q", "--", pkg]).env("LC_ALL", "C").output() else {
+        return false;
+    };
+    String::from_utf8_lossy(&out.stdout).split_whitespace().next() == Some(pkg)
+}
+
+/// `pacdeb untrack <name>`: stops tracking an app and leaves it installed.
+pub fn untrack(name: &str) -> Result<()> {
+    let paths = Paths::from_env()?;
+    let pkg = untrack_quietly(name, &paths)?;
+    println!("Stopped tracking {name}. {pkg} stays installed; uninstall it with 'sudo pacman -R {pkg}' if you want it gone.");
+    Ok(())
+}
+
+/// Forgets an app (config, build records, local repository entry). Returns its package name.
+fn untrack_quietly(name: &str, paths: &Paths) -> Result<String> {
     let mut config = Config::load(&paths.config)?;
     let Some(app) = config.apps.remove(name) else {
         bail!("{name} is not tracked; 'pacdeb list' shows the tracked apps");
@@ -395,16 +444,15 @@ pub fn remove(name: &str) -> Result<()> {
     if state.apps.remove(name).is_some() {
         state.save(&paths.state)?;
     }
-    let pkg = app.pkgname.as_deref().unwrap_or(name);
+    let pkg = app.pkgname.clone().unwrap_or_else(|| name.to_string());
     if let Some(repo) = &config.settings.repo {
-        match crate::repo::unpublish(pkg, &paths, repo) {
+        match crate::repo::unpublish(&pkg, paths, repo) {
             Ok(true) => println!("Took {pkg} out of the [{}] repository.", repo.name),
             Ok(false) => {}
             Err(e) => println!("warning: could not take {pkg} out of the repository: {e}"),
         }
     }
-    println!("Stopped tracking {name}. The package stays installed; remove it with 'sudo pacman -R {pkg}' if you want.");
-    Ok(())
+    Ok(pkg)
 }
 
 /// pacman's installed version of a package, if any.

@@ -132,7 +132,7 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
 }
 
 /// Debug builds only: PACDEB_GUI_OPEN=add | edit:<app> | install:<package file> |
-/// browse:<app or repository> | repo:<repository> opens
+/// browse:<app or repository> | repo:<repository> | remove:<app> opens
 /// that dialog at startup, for checking it with PACDEB_GUI_SNAPSHOT.
 #[cfg(debug_assertions)]
 fn open_for_tests(ctx: &Rc<Ctx>) {
@@ -152,6 +152,12 @@ fn open_for_tests(ctx: &Rc<Ctx>) {
             }
         }
         Some(("repo", name)) => repo_dialog::open(ctx, name),
+        Some(("remove", app)) => {
+            let paths = pacdeb::paths::Paths::from_env().expect("paths");
+            let config = pacdeb::registry::Config::load(&paths.config).expect("config");
+            let pkg = config.apps.get(app).and_then(|a| a.pkgname.clone()).unwrap_or_else(|| app.to_string());
+            apps_page::confirm_remove(ctx, app, &pkg);
+        }
         _ => eprintln!("PACDEB_GUI_OPEN: unknown value {what}"),
     }
 }

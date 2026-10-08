@@ -65,8 +65,13 @@ pub fn run(args: &[String]) -> ExitCode {
             _ => usage_error("list", "usage: pacdeb list [--upgradable]"),
         },
         "remove" => match &args[1..] {
-            [name] if !name.starts_with('-') => finish(crate::apps::remove(name)),
-            _ => usage_error("remove", "usage: pacdeb remove <app>"),
+            [] => usage_error("remove", "usage: pacdeb remove <app>..."),
+            names if names.iter().all(|n| !n.starts_with('-')) => finish(crate::apps::remove(names)),
+            _ => usage_error("remove", "usage: pacdeb remove <app>..."),
+        },
+        "untrack" => match &args[1..] {
+            [name] if !name.starts_with('-') => finish(crate::apps::untrack(name)),
+            _ => usage_error("untrack", "usage: pacdeb untrack <app>"),
         },
         "check" => {
             let notify = args[1..].iter().any(|a| a == "--notify");

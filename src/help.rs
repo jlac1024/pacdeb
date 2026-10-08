@@ -20,7 +20,8 @@ Like apt:
 Managing apps and sources:
   add <app>                     Track an app (proton-mail, example-app built in)
   set [app]                     Change a tracked app, or the global channel
-  remove <app>                  Stop tracking an app (does not uninstall it)
+  remove <app>...               Uninstall apps and stop tracking them
+  untrack <app>                 Stop tracking an app, leave it installed
   check [app]                   Ask the sources now, without remembering the answer
   apt list|add|show|edit|key|remove|packages
                                 Manage saved apt repositories
@@ -191,10 +192,22 @@ go back with 'sudo pacman -U <older package>'.
 ";
 
 const REMOVE: &str = "\
-Usage: pacdeb remove <app>
+Usage: pacdeb remove <app>...
 
-Stops tracking an app. The installed package stays; remove it with
-'sudo pacman -R <package>' if you want it gone.
+Like 'apt remove': uninstalls the apps with 'sudo pacman -R' (pacman lists what
+it removes and asks first), then stops tracking them. If pacman does not remove
+them, nothing changes. An app's package name works too (example-app-deb).
+Apps that are not installed are only untracked.
+
+To stop tracking an app but keep it installed, use 'pacdeb untrack <app>'.
+";
+
+const UNTRACK: &str = "\
+Usage: pacdeb untrack <app>
+
+Stops tracking an app: pacdeb forgets its source and build records and takes it
+out of the local repository. The installed package stays; 'pacdeb remove <app>'
+uninstalls it instead.
 ";
 
 const TIMER: &str = "\
@@ -279,7 +292,7 @@ Saved apt repositories. Apps take packages from them by name
       is given, and the repository must be signed by the new key.
   remove <name> [--with-apps]
       Deletes a repository. Apps using it must be moved or removed first;
-      --with-apps stops tracking them too.
+      --with-apps stops tracking them too (they stay installed).
   packages <name>
       Everything the repository offers.
 
@@ -301,6 +314,7 @@ pub fn page(command: &str) -> Option<&'static str> {
         "upgrade" => UPGRADE,
         "search" => SEARCH,
         "remove" => REMOVE,
+        "untrack" => UNTRACK,
         "timer" => TIMER,
         "repo" => REPO,
         "packages" => PACKAGES,
@@ -313,7 +327,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt", "upgrade", "search"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt", "upgrade", "search", "untrack"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {

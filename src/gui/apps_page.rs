@@ -131,23 +131,63 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox) {
     }
 }
 
-fn confirm_remove(ctx: &Rc<Ctx>, name: &str, pkg: &str) {
-    let body = format!("pacdeb stops updating {name}. The installed package {pkg} stays; remove it with your package manager if you want it gone.");
-    let alert = adw::AlertDialog::new(Some(&format!("Stop tracking {name}?")), Some(&body));
+/// Uninstall (like 'pacdeb remove') or only stop tracking ('pacdeb untrack').
+pub fn confirm_remove(ctx: &Rc<Ctx>, name: &str, pkg: &str) {
+    let installed = apps::installed_version(pkg).is_some_and(|_| exact_installed(pkg));
+    let body = if installed {
+        format!("Uninstall removes {pkg} from the system and stops tracking it.\nStop tracking keeps {pkg} installed, but pacdeb no longer updates it.")
+    } else {
+        format!("{pkg} is not installed. pacdeb will stop tracking {name}.")
+    };
+    let alert = adw::AlertDialog::new(Some(&format!("Remove {name}?")), Some(&body));
     alert.add_response("cancel", "Cancel");
-    alert.add_response("remove", "Stop tracking");
-    alert.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+    alert.add_response("untrack", "Stop tracking");
+    if installed {
+        alert.add_response("uninstall", "Uninstall");
+        alert.set_response_appearance("uninstall", adw::ResponseAppearance::Destructive);
+    }
     alert.set_close_response("cancel");
-    let (ctx2, name) = (ctx.clone(), name.to_string());
-    alert.connect_response(None, move |_, response| {
-        if response != "remove" {
-            return;
+    let (ctx2, name, pkg) = (ctx.clone(), name.to_string(), pkg.to_string());
+    alert.connect_response(None, move |_, response| match response {
+        "untrack" => untrack(&ctx2, &name),
+        "uninstall" => {
+            // The GUI has no terminal for pacman's question; the dialog above was the
+            // confirmation, so pacman runs through pkexec without asking again.
+            let custom = std::env::var("PACDEB_GUI_REMOVE_CMD").ok().filter(|c| !c.trim().is_empty());
+            let line = custom.unwrap_or_else(|| "pkexec pacman -R --noconfirm".into());
+            let mut parts = line.split_whitespace().map(String::from);
+            let program = std::path::PathBuf::from(parts.next().unwrap_or_default());
+            let mut args: Vec<String> = parts.collect();
+            args.push(pkg.clone());
+            let (ctx3, name) = (ctx2.clone(), name.clone());
+            run::logged(&ctx2, &format!("Uninstalling {pkg}"), &program, &args, false, move |log, done| {
+                if done.ok {
+                    log.close();
+                    untrack(&ctx3, &name);
+                } else {
+                    ctx3.refresh();
+                }
+            });
         }
-        let ctx3 = ctx2.clone();
-        run::quiet(&["remove", &name], move |done| {
-            ctx3.refresh();
-            ctx3.toast(done.output.lines().last().unwrap_or(if done.ok { "Removed" } else { "Could not remove" }));
-        });
+        _ => {}
     });
     alert.present(Some(&ctx.window));
+}
+
+fn untrack(ctx: &Rc<Ctx>, name: &str) {
+    let ctx2 = ctx.clone();
+    run::quiet(&["untrack", name], move |done| {
+        ctx2.refresh();
+        let first = done.output.lines().find(|l| !l.starts_with("Took ")).unwrap_or("Done");
+        ctx2.toast(if done.ok { first.split(". ").next().unwrap_or(first) } else { first });
+    });
+}
+
+/// Whether exactly `pkg` is installed, not something that only provides the name.
+fn exact_installed(pkg: &str) -> bool {
+    std::process::Command::new("pacman")
+        .args(["-Q", "--", pkg])
+        .env("LC_ALL", "C")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().next() == Some(pkg))
 }
