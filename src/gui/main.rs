@@ -152,8 +152,8 @@ fn show_about(window: &adw::ApplicationWindow) {
         .application_icon("system-software-install")
         .version(env!("CARGO_PKG_VERSION"))
         .comments(format!("Turns Debian .deb packages into pacman packages and keeps them updated, like apt.\n\nBuild {}", pacdeb::build()))
-        .developer_name("Jeff")
-        .copyright("© 2026 Jeff")
+        .developer_name("Jeff LaCombe")
+        .copyright("© 2026 Jeff LaCombe (jlac1024)")
         .license_type(gtk::License::Agpl30)
         .build();
     about.present(Some(window));

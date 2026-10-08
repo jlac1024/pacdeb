@@ -195,4 +195,4 @@ other environment settings.
 pacdeb is free software under the GNU Affero General Public License, version 3 or (at
 your option) any later version. See [LICENSE](LICENSE). It comes with no warranty.
 
-Copyright (C) 2026 Jeff
+Copyright (C) 2026 Jeff LaCombe (jlac1024)
