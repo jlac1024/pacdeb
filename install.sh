@@ -23,7 +23,21 @@ command -v pacman > /dev/null || fail "pacman was not found; pacdeb is for Cachy
 # makepkg refuses to run as root, and pacdeb's settings belong to your own account.
 [[ $EUID -ne 0 ]] || fail "run it as yourself, not as root; it asks for your password when it needs it"
 
+# Asks for the password once, up front, then keeps sudo's timestamp fresh while the
+# build runs. The build takes long enough for the timestamp to run out before
+# pacman -U, which would leave a password prompt waiting at the end.
+ask_password_now() {
+    [[ -n "$sudo" ]] || return 0
+    echo "pacdeb needs your password to install packages; it asks once now."
+    "$sudo" -v || fail "sudo did not accept the password"
+    while sleep 60; do "$sudo" -n -v 2> /dev/null || exit; done &
+    keepalive=$!
+    trap 'kill "$keepalive" 2> /dev/null' EXIT
+}
+
 install_pacdeb() {
+    ask_password_now
+
     step "Tools to build pacdeb"
     local need=()
     pacman -Qq base-devel &> /dev/null || need+=(base-devel)
@@ -61,6 +75,7 @@ install_pacdeb() {
 }
 
 uninstall_pacdeb() {
+    ask_password_now
     if [[ -x /usr/bin/pacdeb-setup ]]; then
         step "Undoing the system setup"
         /usr/bin/pacdeb-setup --remove
