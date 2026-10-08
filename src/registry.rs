@@ -425,6 +425,16 @@ pub struct Preset {
     pub note: Option<String>,
 }
 
+/// The built in app `name` refers to: by its own name, or by the package it installs
+/// (google-chrome-stable for google-chrome).
+pub fn preset_for(name: &str) -> Option<String> {
+    let all = presets();
+    if all.contains_key(name) {
+        return Some(name.to_string());
+    }
+    all.into_iter().find(|(_, p)| matches!(&p.source, SourceConfig::Apt { package: Some(pkg), .. } if pkg == name)).map(|(k, _)| k)
+}
+
 pub fn presets() -> BTreeMap<String, Preset> {
     toml::from_str(PRESETS).expect("data/presets.toml is checked by tests")
 }
@@ -501,6 +511,14 @@ mod tests {
         let apt = p["example-app"].apt.as_ref().unwrap();
         assert_eq!(apt.key_fingerprint.as_deref(), Some("A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"));
         assert_eq!(apt.components, ["main"]);
+    }
+
+    #[test]
+    fn finds_built_in_apps_by_package() {
+        let cases = [("google-chrome", Some("google-chrome")), ("google-chrome-stable", Some("google-chrome")), ("spotify-client", Some("spotify")), ("proton-mail", Some("proton-mail")), ("nothing-like-this", None)];
+        for (name, want) in cases {
+            assert_eq!(preset_for(name).as_deref(), want, "{name}");
+        }
     }
 
     #[test]
