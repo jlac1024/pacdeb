@@ -21,6 +21,11 @@ pub fn run(action: &str) -> Result<()> {
     }
 }
 
+/// Whether scheduled checks are on (the timer unit is in place).
+pub fn is_enabled() -> bool {
+    unit_dir().is_ok_and(|d| d.join(TIMER).exists())
+}
+
 /// ~/.config/systemd/user, or a folder under PACDEB_HOME so test runs stay out of the
 /// real one.
 fn unit_dir() -> Result<PathBuf> {

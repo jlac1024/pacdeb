@@ -1,0 +1,166 @@
+//! pacdeb-gui: a window over pacdeb. It reads apps and versions through the library and
+//! runs the pacdeb command line tool for anything that changes something, so both
+//! behave the same. Installs go through its own confirmation and a polkit prompt.
+
+mod apps_page;
+mod convert_page;
+mod install;
+mod run;
+mod settings_page;
+mod source_dialog;
+
+use std::cell::RefCell;
+use std::process::ExitCode;
+use std::rc::Rc;
+
+use adw::prelude::*;
+
+const APP_ID: &str = "local.pacdeb.Gui";
+
+/// What every page needs: the window to put dialogs on, a place for short messages,
+/// and a way to tell the other pages that something changed.
+pub struct Ctx {
+    pub window: adw::ApplicationWindow,
+    toasts: adw::ToastOverlay,
+    refreshers: RefCell<Vec<Rc<dyn Fn()>>>,
+}
+
+impl Ctx {
+    pub fn toast(&self, msg: &str) {
+        let t = adw::Toast::new(msg);
+        t.set_timeout(5);
+        self.toasts.add_toast(t);
+    }
+
+    pub fn on_refresh(&self, f: impl Fn() + 'static) {
+        self.refreshers.borrow_mut().push(Rc::new(f));
+    }
+
+    /// Reloads every page from the config and state files.
+    pub fn refresh(&self) {
+        let all: Vec<Rc<dyn Fn()>> = self.refreshers.borrow().clone();
+        for f in all {
+            f();
+        }
+    }
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    // When the command line tool installs on the GUI's behalf it calls back with the
+    // built packages; they are written down for the GUI's own confirmation step.
+    if args.get(1).map(String::as_str) == Some("--record") {
+        return run::record(&args[2..]);
+    }
+    let mut page = None;
+    let mut deb = None;
+    let mut rest = args[1..].iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--page" => page = rest.next().cloned(),
+            "-h" | "--help" => {
+                println!("Usage: pacdeb-gui [--page apps|convert|settings] [file.deb]");
+                return ExitCode::SUCCESS;
+            }
+            _ if !a.starts_with('-') => deb = Some(std::path::PathBuf::from(a)),
+            other => {
+                eprintln!("pacdeb-gui: unknown option '{other}'. Usage: pacdeb-gui [--page apps|convert|settings] [file.deb]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_activate(move |app| build_window(app, page.as_deref(), deb.clone()));
+    let code = app.run_with_args(&args[..1]);
+    code.into()
+}
+
+fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::path::PathBuf>) {
+    if let Some(w) = app.active_window() {
+        w.present();
+        return;
+    }
+    let stack = adw::ViewStack::new();
+    let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
+    let header = adw::HeaderBar::builder().title_widget(&switcher).build();
+    let toasts = adw::ToastOverlay::new();
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&stack));
+    toasts.set_child(Some(&view));
+
+    let window = adw::ApplicationWindow::builder()
+        .application(app)
+        .title("pacdeb")
+        .default_width(860)
+        .default_height(640)
+        .content(&toasts)
+        .build();
+    let ctx = Rc::new(Ctx { window: window.clone(), toasts, refreshers: RefCell::new(Vec::new()) });
+
+    stack.add_titled_with_icon(&apps_page::build(&ctx), Some("apps"), "Apps", "view-list-symbolic");
+    let (convert, converter) = convert_page::build(&ctx);
+    stack.add_titled_with_icon(&convert, Some("convert"), "Convert", "package-x-generic-symbolic");
+    stack.add_titled_with_icon(&settings_page::build(&ctx), Some("settings"), "Settings", "emblem-system-symbolic");
+    match (deb, page) {
+        (Some(path), _) => {
+            stack.set_visible_child_name("convert");
+            convert_page::show(&converter, path);
+        }
+        (None, Some(p)) if ["apps", "convert", "settings"].contains(&p) => stack.set_visible_child_name(p),
+        _ => {}
+    }
+    window.present();
+    #[cfg(debug_assertions)]
+    {
+        open_for_tests(&ctx);
+        snapshot_for_tests(&window);
+    }
+}
+
+/// Debug builds only: PACDEB_GUI_OPEN=add | edit:<app> | install:<package file> opens
+/// that dialog at startup, for checking it with PACDEB_GUI_SNAPSHOT.
+#[cfg(debug_assertions)]
+fn open_for_tests(ctx: &Rc<Ctx>) {
+    let Some(what) = std::env::var("PACDEB_GUI_OPEN").ok() else {
+        return;
+    };
+    match what.split_once(':') {
+        None if what == "add" => source_dialog::open(ctx, None),
+        Some(("edit", app)) => source_dialog::open(ctx, Some(app)),
+        Some(("install", pkg)) => install::confirm(ctx, vec![std::path::PathBuf::from(pkg)]),
+        _ => eprintln!("PACDEB_GUI_OPEN: unknown value {what}"),
+    }
+}
+
+/// Debug builds only: with PACDEB_GUI_SNAPSHOT=<file.png>:<seconds>, the window saves a
+/// picture of itself after that many seconds and quits, so changes can be checked
+/// without a person at the screen.
+#[cfg(debug_assertions)]
+fn snapshot_for_tests(window: &adw::ApplicationWindow) {
+    let Some(spec) = std::env::var("PACDEB_GUI_SNAPSHOT").ok() else {
+        return;
+    };
+    let (file, secs) = spec.rsplit_once(':').map_or((spec.as_str(), 3), |(f, s)| (f, s.parse().unwrap_or(3)));
+    let (file, window) = (file.to_string(), window.clone());
+    gtk::glib::timeout_add_seconds_local_once(secs, move || {
+        // An open dialog is what is being checked; otherwise the window's content.
+        let Some(content) = window.visible_dialog().map(|d| d.upcast::<gtk::Widget>()).or_else(|| window.content()) else {
+            return;
+        };
+        let paintable = gtk::WidgetPaintable::new(Some(&content));
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot(&snapshot, content.width() as f64, content.height() as f64);
+        match (snapshot.to_node(), window.renderer()) {
+            (Some(node), Some(renderer)) => {
+                if let Err(e) = renderer.render_texture(&node, None).save_to_png(&file) {
+                    eprintln!("snapshot: {e}");
+                }
+            }
+            (node, renderer) => eprintln!("snapshot: nothing to save (content: {}, renderer: {})", node.is_some(), renderer.is_some()),
+        }
+        if let Some(app) = window.application() {
+            app.quit();
+        }
+    });
+}

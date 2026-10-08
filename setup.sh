@@ -5,6 +5,7 @@
 #   3. pacman's trust in that key (pacman-key)
 #   4. the [pacdeb] section in pacman.conf
 #   5. the timer that builds new versions in the background
+#   6. a start menu entry for pacdeb-gui, which also opens .deb files
 # Steps already done are skipped, so it is safe to run again. sudo is used only for
 # the steps that need root. 'setup.sh --remove' undoes all of it.
 set -euo pipefail
@@ -13,6 +14,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pacdeb="${PACDEB_BIN:-$root/deploy/pacdeb}"
 repo_dir="${PACDEB_REPO_DIR:-/var/lib/pacdeb/repo}"
 pacman_conf="${PACMAN_CONF:-/etc/pacman.conf}"
+apps_dir="${PACDEB_APPS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/applications}"
+desktop_file="$apps_dir/pacdeb.desktop"
 # Tests set SUDO to empty and PACMAN_KEY_CMD to a pacman-key with its own keyring.
 sudo="${SUDO-sudo}"
 read -r -a pacman_key <<< "${PACMAN_KEY_CMD:-pacman-key}"
@@ -32,6 +35,21 @@ fingerprint() {
 
 has_section() {
     grep -qx '\[pacdeb\][[:space:]]*' "$pacman_conf"
+}
+
+write_desktop_file() {
+    printf '%s\n' \
+        '[Desktop Entry]' \
+        'Type=Application' \
+        'Name=pacdeb' \
+        'GenericName=Debian Package Converter' \
+        'Comment=Install .deb apps as pacman packages and keep them updated' \
+        "Exec=\"$root/deploy/pacdeb-gui\" %f" \
+        'Icon=system-software-install' \
+        'Terminal=false' \
+        'Categories=System;Settings;PackageManager;' \
+        'MimeType=application/vnd.debian.binary-package;application/x-deb;' \
+        'Keywords=deb;debian;package;install;update;'
 }
 
 setup() {
@@ -72,6 +90,16 @@ setup() {
     step "Update timer"
     "$pacdeb" timer enable
 
+    step "Start menu entry"
+    if [[ -x "$root/deploy/pacdeb-gui" ]]; then
+        mkdir -p "$apps_dir"
+        write_desktop_file > "$desktop_file"
+        update-desktop-database "$apps_dir" 2> /dev/null || true
+        echo "    $desktop_file"
+    else
+        echo "    skipped: deploy/pacdeb-gui is missing (run build/build.sh)"
+    fi
+
     step "Done"
     echo "pacdeb apps now show up in your system updates once pacman refreshes its"
     echo "package lists (the CachyOS updater and 'sudo pacman -Syu' both do that)."
@@ -83,6 +111,15 @@ remove() {
 
     step "Update timer"
     "$pacdeb" timer disable
+
+    step "Start menu entry"
+    if [[ -f "$desktop_file" ]]; then
+        rm "$desktop_file"
+        update-desktop-database "$apps_dir" 2> /dev/null || true
+        echo "    removed"
+    else
+        skip
+    fi
 
     step "[pacdeb] section in $pacman_conf"
     if has_section; then

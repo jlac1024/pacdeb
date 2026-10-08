@@ -446,6 +446,7 @@ pub fn list() -> Result<()> {
 }
 
 /// What check found for one app.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
     UpToDate(String),
     Newer { current: Option<String>, latest: String },
@@ -475,6 +476,16 @@ pub fn status(latest: &Latest, state: Option<&AppState>) -> Status {
     Status::Manual
 }
 
+/// Asks one tracked app's source what its newest version is, downloading no debs.
+pub fn check_app(name: &str, config: &Config, state: &State, paths: &Paths) -> Result<Status> {
+    let Some(app) = config.apps.get(name) else {
+        bail!("{name} is not tracked; 'pacdeb list' shows the tracked apps");
+    };
+    let channel = config.channel(app);
+    let latest = sources::latest(name, &app.source, channel.as_deref(), &paths.config, &paths.cache)?;
+    Ok(status(&latest, state.apps.get(name)))
+}
+
 /// `notify` sends a desktop notification when the updates found differ from the ones
 /// last notified about (used by the timer).
 pub fn check(name: Option<&str>, notify: bool) -> Result<()> {
@@ -499,12 +510,12 @@ pub fn check(name: Option<&str>, notify: bool) -> Result<()> {
         let channel = config.channel(app);
         let label = format!("{n:<width$}");
         let shown_channel = channel.as_deref().filter(|_| app.source.uses_channel()).map(|c| format!(" [{c}]")).unwrap_or_default();
-        match sources::latest(n, &app.source, channel.as_deref(), &paths.config, &paths.cache) {
+        match check_app(n, &config, &state, &paths) {
             Err(e) => {
                 failed += 1;
                 println!("{label}  {} {e}", st.bad("error:"));
             }
-            Ok(latest) => match status(&latest, state.apps.get(n)) {
+            Ok(found) => match found {
                 Status::UpToDate(v) => println!("{label}  up to date: {v}{shown_channel}"),
                 Status::Newer { current: Some(c), latest } => {
                     println!("{label}  {} {c} -> {latest}{shown_channel}", st.warn("update:"));
