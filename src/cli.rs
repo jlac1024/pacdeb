@@ -68,8 +68,14 @@ pub fn run(args: &[String]) -> ExitCode {
                 _ => usage_error("check", "usage: pacdeb check [app] [--notify]"),
             }
         }
+        "repo" => match &args[1..] {
+            [a] if a == "init" => finish(crate::repo::init(None)),
+            [a, dir] if a == "init" && !dir.starts_with('-') => finish(crate::repo::init(Some(dir))),
+            [a] if a == "status" => finish(crate::repo::status()),
+            _ => usage_error("repo", "usage: pacdeb repo init [dir], or pacdeb repo status"),
+        },
         "timer" => match &args[1..] {
-            [action] if ["enable", "disable", "status"].contains(&action.as_str()) => finish(crate::timer::run(action)),
+            [action] if ["enable", "disable", "status", "run"].contains(&action.as_str()) => finish(crate::timer::run(action)),
             _ => usage_error("timer", "usage: pacdeb timer enable|disable|status"),
         },
         other => usage_error("", &format!("unknown command '{other}'")),
@@ -139,7 +145,7 @@ fn install(args: &[String]) -> ExitCode {
 const UPDATE_USAGE: &str = "usage: pacdeb update [name] [--file <file.deb>] [--direct] [--no-install]";
 
 fn update(args: &[String]) -> ExitCode {
-    let mut opts = crate::update::Options { name: None, file: None, direct: false, no_install: false };
+    let mut opts = crate::update::Options { name: None, file: None, direct: false, no_install: false, notify: false };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {

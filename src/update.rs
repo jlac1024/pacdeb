@@ -23,6 +23,8 @@ pub struct Options {
     pub file: Option<PathBuf>,
     pub direct: bool,
     pub no_install: bool,
+    /// Send a desktop notification listing what was built (the timer uses this).
+    pub notify: bool,
 }
 
 pub fn update(opts: &Options) -> Result<()> {
@@ -45,6 +47,7 @@ pub fn update(opts: &Options) -> Result<()> {
     }
 
     let mut built = Vec::new();
+    let mut built_names = Vec::new();
     let mut failed = Vec::new();
     for name in &names {
         let app = &config.apps[name];
@@ -53,7 +56,10 @@ pub fn update(opts: &Options) -> Result<()> {
             None => update_one(name, app, &config, opts.direct, &paths, &mut state),
         };
         match result {
-            Ok(Some(b)) => built.push(b.path),
+            Ok(Some(b)) => {
+                built_names.push(format!("{name} {}", b.deb_version));
+                built.push(b.path);
+            }
             Ok(None) => {}
             Err(e) => {
                 println!("{} {name}: {e}", st.bad("error:"));
@@ -68,6 +74,12 @@ pub fn update(opts: &Options) -> Result<()> {
             return Ok(());
         }
         bail!("could not update: {}", failed.join(", "));
+    }
+    if opts.notify {
+        let ready = if config.settings.repo.is_some() { "Install with your next system update." } else { "Install with 'pacdeb update'." };
+        if let Err(e) = crate::notify::built(&built_names, ready) {
+            println!("{} could not send a notification: {e}", st.warn("warning:"));
+        }
     }
     if opts.no_install {
         for p in &built {
@@ -152,12 +164,19 @@ fn build_and_record(name: &str, app: &App, deb: &Path, latest: Option<&Latest>, 
     let built = convert::build_package(deb, direct, None, Some(app), prev.as_ref())?;
     record(state, name, &built, latest);
     state.save(&paths.state)?;
+    let mut config = Config::load(&paths.config)?;
     // Keep the new name from now on, so it does not change back if the clash goes away.
     if let Some(pkgname) = &built.renamed {
-        let mut config = Config::load(&paths.config)?;
         if let Some(a) = config.apps.get_mut(name) {
             a.pkgname = Some(pkgname.clone());
             config.save(&paths.config)?;
+        }
+    }
+    // A failed publish leaves a good build, so it only warns.
+    if let Some(repo) = &config.settings.repo {
+        match crate::repo::publish(&built.path, paths, repo) {
+            Ok(()) => println!("{name}: published to the [{}] repository", repo.name),
+            Err(e) => println!("{} {name}: could not publish to the repository: {e}", Style::for_stdout().warn("warning:")),
         }
     }
     Ok(built)

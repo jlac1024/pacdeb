@@ -1,5 +1,5 @@
-//! `pacdeb timer`: a systemd user timer that runs `pacdeb check --notify` after login
-//! and every few hours. Everything lives in the user's own systemd directory, so no
+//! `pacdeb timer`: a systemd user timer that runs `pacdeb timer run` after login and
+//! every few hours. Everything lives in the user's own systemd directory, so no
 //! root is needed.
 
 use std::fs;
@@ -16,6 +16,7 @@ pub fn run(action: &str) -> Result<()> {
     match action {
         "enable" => enable(&dir),
         "disable" => disable(&dir),
+        "run" => scheduled(),
         _ => status(&dir),
     }
 }
@@ -52,6 +53,20 @@ fn systemctl(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// What the timer runs. With a repository, new versions are built in the background
+/// and published there, so the system updater installs them; without one, updates
+/// are only reported.
+fn scheduled() -> Result<()> {
+    let paths = crate::paths::Paths::from_env()?;
+    let config = crate::registry::Config::load(&paths.config)?;
+    if config.settings.repo.is_some() {
+        let opts = crate::update::Options { name: None, file: None, direct: false, no_install: true, notify: true };
+        crate::update::update(&opts)
+    } else {
+        crate::apps::check(None, true)
+    }
+}
+
 fn units(exe: &Path) -> (String, String) {
     let service = format!(
         "[Unit]\n\
@@ -59,7 +74,7 @@ fn units(exe: &Path) -> (String, String) {
          \n\
          [Service]\n\
          Type=oneshot\n\
-         ExecStart=\"{}\" check --notify\n",
+         ExecStart=\"{}\" timer run\n",
         exe.display()
     );
     let timer = "[Unit]\n\
@@ -123,7 +138,7 @@ mod tests {
     #[test]
     fn writes_units_that_run_check() {
         let (service, timer) = units(Path::new("/home/j/my apps/pacdeb"));
-        assert!(service.contains("ExecStart=\"/home/j/my apps/pacdeb\" check --notify\n"), "{service}");
+        assert!(service.contains("ExecStart=\"/home/j/my apps/pacdeb\" timer run\n"), "{service}");
         assert!(service.contains("Type=oneshot"));
         for want in ["OnStartupSec=5min", "OnUnitActiveSec=6h", "WantedBy=timers.target"] {
             assert!(timer.contains(want), "{want}");

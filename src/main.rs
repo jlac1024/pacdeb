@@ -16,6 +16,7 @@ mod net;
 mod paths;
 mod registry;
 mod relation;
+mod repo;
 mod sources;
 mod style;
 mod timer;

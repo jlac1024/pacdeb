@@ -26,6 +26,21 @@ pub struct Settings {
     /// Channel for apps that do not pick their own, such as "Stable".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// The local pacman repository builds are published to, once set up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<RepoSettings>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoSettings {
+    /// Folder holding the packages and database, outside the home folder so pacman's
+    /// download user can read it.
+    pub dir: String,
+    /// The repository's name in pacman.conf.
+    pub name: String,
+    /// Fingerprint of pacdeb's signing key.
+    pub key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

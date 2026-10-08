@@ -62,6 +62,7 @@ so you see the usual sudo prompt and pacman's own confirmation.
 | `update [app]` | Download, build and install anything newer |
 | `remove <app>` | Stop tracking an app (leaves it installed) |
 | `timer enable` | Check after login and every 6 hours, with a desktop notification for new versions |
+| `repo init` | Publish builds to a local pacman repository, so system updates install them |
 
 `pacdeb help <command>` shows every option.
 
@@ -92,6 +93,34 @@ Apps with channels (like Proton Mail's Stable, EarlyAccess and Alpha) take
 
 The last two builds of each app stay in `~/.cache/pacdeb/packages`. To go back a
 version, install the older one with `sudo pacman -U <package>`.
+
+## Updating with the rest of the system
+
+pacdeb can keep a local pacman repository of its builds. Every updater reads the
+repositories in `pacman.conf`, so `pacman -Syu`, the CachyOS updater and Shelly then
+install pacdeb apps like any other package. With the timer on, new versions are built
+in the background and wait in the repository for your next system update.
+
+One-time setup (the folder is outside your home because pacman downloads as the
+`alpm` user):
+
+```
+sudo install -d -o "$USER" -m 755 /var/lib/pacdeb/repo
+pacdeb repo init
+sudo pacman-key --add /var/lib/pacdeb/repo/pacdeb.pub.asc
+sudo pacman-key --lsign-key <fingerprint printed by repo init>
+```
+
+Then add to the end of `/etc/pacman.conf`:
+
+```
+[pacdeb]
+SigLevel = Required
+Server = file:///var/lib/pacdeb/repo
+```
+
+Packages and the database are signed with a key only pacdeb uses, so pacman refuses
+anything else placed in that folder.
 
 ## What conversion does
 
