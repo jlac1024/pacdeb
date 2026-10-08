@@ -12,10 +12,38 @@
 # Steps already done are skipped, so it is safe to run again. sudo is used only for
 # the steps that need root. 'setup.sh --remove' undoes all of it.
 #
+# The installed pacdeb-setup can also run with sudo from your own account: the root
+# steps then run directly and the rest runs as you, so the repository, key and timer
+# still belong to your account.
+#
 # Installed as the pacdeb package (which install.sh does), this script is
 # /usr/bin/pacdeb-setup. The package then provides steps 6 and 7 itself, and the
 # script removes the copies an earlier run from the source folder made in your home.
 set -euo pipefail
+
+# Tests set SUDO to empty and PACMAN_KEY_CMD to a pacman-key with its own keyring.
+sudo="${SUDO-sudo}"
+read -r -a pacman_key <<< "${PACMAN_KEY_CMD:-pacman-key}"
+if [[ "${PACDEB_TEST_EUID:-$EUID}" -eq 0 ]]; then
+    user="${SUDO_USER-}"
+    if [[ -z "$user" || "$user" == root ]]; then
+        echo "Run it as yourself, or with sudo from your own account; pacdeb's settings belong to an account, not to root." >&2
+        exit 1
+    fi
+    uid="$(id -u "$user")"
+    HOME="$(getent passwd "$user" | cut -d: -f6)"
+    export HOME
+    sudo=""
+    read -r -a runuser <<< "${RUNUSER_CMD:-runuser -u}"
+    # The timer and gpg-agent need the account's own session, not root's.
+    as_user() {
+        "${runuser[@]}" "$user" -- env HOME="$HOME" XDG_RUNTIME_DIR="/run/user/$uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@"
+    }
+else
+    user="$(id -un)"
+    as_user() { "$@"; }
+fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Installed as a package, or run from the source folder.
@@ -40,16 +68,16 @@ data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 fish_file="${PACDEB_FISH_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions}/pacdeb.fish"
 bash_file="${PACDEB_BASH_DIR:-$data_home/bash-completion/completions}/pacdeb"
 zsh_file="${PACDEB_ZSH_DIR:-$data_home/zsh/site-functions}/_pacdeb"
-# Tests set SUDO to empty and PACMAN_KEY_CMD to a pacman-key with its own keyring.
-sudo="${SUDO-sudo}"
-read -r -a pacman_key <<< "${PACMAN_KEY_CMD:-pacman-key}"
-
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 skip() { printf '    already done\n'; }
 as_root() { if [[ -n "$sudo" ]]; then "$sudo" "$@"; else "$@"; fi; }
 
 if [[ ! -x "$pacdeb" ]]; then
     echo "$pacdeb is missing. Run build/build.sh first, or install.sh to install pacdeb." >&2
+    exit 1
+fi
+if [[ -n "${runuser-}" && "$packaged" == 0 ]]; then
+    echo "From the source folder, run setup.sh as yourself; it asks for your password when it needs it." >&2
     exit 1
 fi
 
@@ -60,21 +88,21 @@ remove_folder_copies() {
     for bin in pacdeb pacdeb-gui; do
         link="$bin_dir/$bin"
         if [[ -L "$link" && "$(readlink "$link")" == */deploy/$bin ]]; then
-            rm "$link"
+            as_user rm "$link"
             echo "    removed $link"
             removed=1
         fi
     done
     for file in "$fish_file" "$bash_file" "$zsh_file"; do
         if [[ -f "$file" ]] && grep -q "pacdeb completions" "$file"; then
-            rm "$file"
+            as_user rm "$file"
             echo "    removed $file"
             removed=1
         fi
     done
     if [[ -f "$desktop_file" ]] && grep -q "/deploy/pacdeb-gui" "$desktop_file"; then
-        rm "$desktop_file"
-        update-desktop-database "$apps_dir" 2> /dev/null || true
+        as_user rm "$desktop_file"
+        as_user update-desktop-database "$apps_dir" 2> /dev/null || true
         echo "    removed $desktop_file"
         removed=1
     fi
@@ -84,7 +112,7 @@ remove_folder_copies() {
 }
 
 fingerprint() {
-    "$pacdeb" repo status 2> /dev/null | sed -n 's/^Signing key: //p'
+    as_user "$pacdeb" repo status 2> /dev/null | sed -n 's/^Signing key: //p'
 }
 
 has_section() {
@@ -108,15 +136,15 @@ write_desktop_file() {
 
 setup() {
     step "Repository folder $repo_dir"
-    if [[ -d "$repo_dir" && -w "$repo_dir" ]]; then
+    if [[ -d "$repo_dir" ]] && as_user test -w "$repo_dir"; then
         skip
     else
-        as_root install -d -o "$(id -un)" -m 755 "$repo_dir"
+        as_root install -d -o "$user" -m 755 "$repo_dir"
         echo "    created"
     fi
 
     step "Repository and signing key"
-    "$pacdeb" repo init "$repo_dir" | sed -n '/^Published\|^Repository ready/p'
+    as_user "$pacdeb" repo init "$repo_dir" | sed -n '/^Published\|^Repository ready/p'
     local fpr
     fpr="$(fingerprint)"
     if [[ -z "$fpr" ]]; then
@@ -142,7 +170,7 @@ setup() {
     fi
 
     step "Update timer"
-    "$pacdeb" timer enable
+    as_user "$pacdeb" timer enable
 
     if [[ "$packaged" == 1 ]]; then
         step "Menu entry, command and tab completion"
@@ -197,7 +225,7 @@ remove() {
     fpr="$(fingerprint)"
 
     step "Update timer"
-    "$pacdeb" timer disable
+    as_user "$pacdeb" timer disable
 
     if [[ "$packaged" == 1 ]]; then
         step "Menu entry, command and tab completion"
@@ -228,39 +256,38 @@ remove() {
         else
             skip
         fi
+    fi
 
-        step "[pacdeb] section in $pacman_conf"
-        if has_section; then
-            as_root cp "$pacman_conf" "$pacman_conf.pacdeb-backup"
-            # Drop the [pacdeb] section, from its header up to the next section or the end,
-            # and the blank lines right before it that setup added.
-            awk '
-                /^[[:space:]]*$/ { if (!drop) blanks = blanks $0 "\n"; next }
-                /^\[pacdeb\][[:space:]]*$/ { drop = 1; blanks = ""; next }
-                /^\[/ { drop = 0 }
-                !drop { printf "%s", blanks; blanks = ""; print }
-                END { if (!drop) printf "%s", blanks }
-            ' "$pacman_conf.pacdeb-backup" \
-                | as_root tee "$pacman_conf" > /dev/null
-            echo "    removed (the previous file is saved as $pacman_conf.pacdeb-backup)"
-        else
-            skip
-        fi
+    step "[pacdeb] section in $pacman_conf"
+    if has_section; then
+        as_root cp "$pacman_conf" "$pacman_conf.pacdeb-backup"
+        # Drop the [pacdeb] section, from its header up to the next section or the end,
+        # and the blank lines right before it that setup added.
+        awk '
+            /^[[:space:]]*$/ { if (!drop) blanks = blanks $0 "\n"; next }
+            /^\[pacdeb\][[:space:]]*$/ { drop = 1; blanks = ""; next }
+            /^\[/ { drop = 0 }
+            !drop { printf "%s", blanks; blanks = ""; print }
+            END { if (!drop) printf "%s", blanks }
+        ' "$pacman_conf.pacdeb-backup" \
+            | as_root tee "$pacman_conf" > /dev/null
+        echo "    removed (the previous file is saved as $pacman_conf.pacdeb-backup)"
+    else
+        skip
+    fi
 
-        step "pacman's trust in the key"
-        if [[ -n "$fpr" ]] && as_root "${pacman_key[@]}" --list-keys "$fpr" &> /dev/null; then
-            as_root "${pacman_key[@]}" --delete "$fpr"
-        else
-            skip
-        fi
+    step "pacman's trust in the key"
+    if [[ -n "$fpr" ]] && as_root "${pacman_key[@]}" --list-keys "$fpr" &> /dev/null; then
+        as_root "${pacman_key[@]}" --delete "$fpr"
+    else
+        skip
+    fi
 
-        step "Repository"
-        "$pacdeb" repo remove
-        if [[ -d "$repo_dir" ]]; then
-            as_root rm -r "$repo_dir"
-            echo "    deleted $repo_dir"
-        fi
-
+    step "Repository"
+    as_user "$pacdeb" repo remove
+    if [[ -d "$repo_dir" ]]; then
+        as_root rm -r "$repo_dir"
+        echo "    deleted $repo_dir"
     fi
 
     step "Done"

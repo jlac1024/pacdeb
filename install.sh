@@ -8,10 +8,16 @@
 #      key, the [pacdeb] section in pacman.conf, and scheduled updates
 # Run it again after updating the source to install the new version; steps already
 # done are skipped. 'install.sh --uninstall' undoes the setup and removes pacdeb.
+#
+# Run as yourself, it asks for your password at the start. Run with sudo, it never
+# stops to ask: the root steps run directly, and the build and your settings run as
+# the account that ran sudo.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sudo="${SUDO-sudo}"
+# Tests point this at a stub.
+setup_cmd="${PACDEB_SETUP_CMD:-/usr/bin/pacdeb-setup}"
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 as_root() { if [[ -n "$sudo" ]]; then "$sudo" "$@"; else "$@"; fi; }
 fail() {
@@ -20,8 +26,17 @@ fail() {
 }
 
 command -v pacman > /dev/null || fail "pacman was not found; pacdeb is for CachyOS and Arch Linux"
-# makepkg refuses to run as root, and pacdeb's settings belong to your own account.
-[[ $EUID -ne 0 ]] || fail "run it as yourself, not as root; it asks for your password when it needs it"
+# makepkg refuses to run as root, and pacdeb's settings belong to an account, so as
+# root the build runs as the account that ran sudo.
+if [[ "${PACDEB_TEST_EUID:-$EUID}" -eq 0 ]]; then
+    user="${SUDO_USER-}"
+    [[ -n "$user" && "$user" != root ]] || fail "run it as yourself, or with sudo from your own account, not from a root shell"
+    sudo=""
+    read -r -a runuser <<< "${RUNUSER_CMD:-runuser -u}"
+    as_user() { "${runuser[@]}" "$user" -- env HOME="$(getent passwd "$user" | cut -d: -f6)" "$@"; }
+else
+    as_user() { "$@"; }
+fi
 
 # Asks for the password once, up front, then keeps sudo's timestamp fresh while the
 # build runs. The build takes long enough for the timestamp to run out before
@@ -52,22 +67,22 @@ install_pacdeb() {
         echo "    already installed"
     fi
     if command -v rustup > /dev/null && ! rustup toolchain list 2> /dev/null | grep -q .; then
-        rustup default stable
+        as_user rustup default stable
     fi
 
     step "Building the pacdeb package"
     local out="$root/build/packages"
-    mkdir -p "$out"
-    (cd "$root/packaging" && BUILDDIR="$root/build/makepkg" PKGDEST="$out" makepkg --force --cleanbuild)
+    as_user mkdir -p "$out"
+    as_user env -C "$root/packaging" BUILDDIR="$root/build/makepkg" PKGDEST="$out" makepkg --force --cleanbuild
     local pkg
-    pkg="$(cd "$root/packaging" && PKGDEST="$out" makepkg --packagelist | grep -v -- '-debug-' | head -1)"
+    pkg="$(as_user env -C "$root/packaging" PKGDEST="$out" makepkg --packagelist | grep -v -- '-debug-' | head -1)"
     [[ -f "$pkg" ]] || fail "makepkg finished but $pkg is missing"
 
     step "Installing $(basename "$pkg")"
     as_root pacman -U "$pkg"
 
     step "Setting up the system"
-    /usr/bin/pacdeb-setup
+    "$setup_cmd"
 
     step "Done"
     echo "pacdeb $(/usr/bin/pacdeb --version | head -1 | cut -d' ' -f2-) is installed."
@@ -76,12 +91,12 @@ install_pacdeb() {
 
 uninstall_pacdeb() {
     ask_password_now
-    if [[ -x /usr/bin/pacdeb-setup ]]; then
+    if [[ -x "$setup_cmd" ]]; then
         step "Undoing the system setup"
-        /usr/bin/pacdeb-setup --remove
+        "$setup_cmd" --remove
     elif [[ -x "$root/deploy/pacdeb" ]]; then
         step "Undoing the system setup"
-        "$root/setup.sh" --remove
+        as_user "$root/setup.sh" --remove
     fi
     if pacman -Qq pacdeb &> /dev/null; then
         step "Removing the pacdeb package"

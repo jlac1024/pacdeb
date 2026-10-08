@@ -28,12 +28,17 @@ There is also an app, **pacdeb-gui**, that does the same with a window.
 From the project folder:
 
 ```
-./install.sh
+sudo ./install.sh
 ```
+
+The build takes a few minutes. Run with sudo, the script never stops to ask for a
+password: the build and your pacdeb settings run as your own account, and only the
+system steps run as root. `./install.sh` without sudo works too; it asks for your
+password at the start.
 
 It installs what is needed to build pacdeb (base-devel, git, and Rust through rustup)
 if they are missing, builds pacdeb as a pacman package and runs its tests, installs it
-with `sudo pacman -U`, and then sets up the system with `pacdeb-setup`:
+with `pacman -U`, and then sets up the system with `pacdeb-setup`:
 
 1. Creates the local repository folder, `/var/lib/pacdeb/repo`. It lives outside your
    home folder because pacman downloads as the `alpm` user.
@@ -44,10 +49,10 @@ with `sudo pacman -U`, and then sets up the system with `pacdeb-setup`:
 
 The package puts `pacdeb`, `pacdeb-gui` and `pacdeb-setup` in `/usr/bin`, adds pacdeb
 to the app menu (and as an "Open with" choice for `.deb` files), and installs tab
-completion for fish, bash and zsh. It asks for your password only for the steps that
-need root. To install a newer version, update the source and run `./install.sh` again;
-steps already done are skipped. `./install.sh --uninstall` undoes the setup and
-removes the package, leaving the apps pacdeb installed in place.
+completion for fish, bash and zsh. To install a newer version, update the source and
+run `sudo ./install.sh` again; steps already done are skipped.
+`sudo ./install.sh --uninstall` undoes the setup and removes the package, leaving the
+apps pacdeb installed in place.
 
 At runtime pacdeb uses `makepkg` to build packages (or writes them itself with
 `--direct`), `sudo` and `pacman` to install and remove, `gpg` and `gpgv` to check
