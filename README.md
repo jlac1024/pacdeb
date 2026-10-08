@@ -68,6 +68,13 @@ around them, linking both into `~/.local/bin`. `packaging/PKGBUILD` is the recip
 | `remove <app>...` | Uninstalls with `sudo pacman -R` and stops tracking. |
 | `untrack <app>` | Stops tracking an app but leaves it installed. |
 
+Fifteen apps are built in and install by name with nothing set up first:
+`proton-mail`, `example-app`, `google-chrome`, `microsoft-edge`, `brave`, `signal`,
+`element`, `spotify`, `1password`, `mullvad-vpn`, `discord`, `zoom`, `obsidian`,
+`bitwarden` and `rustdesk`. For the ones from apt repositories, pacdeb adds the
+vendor's repository and key itself, and checks the key against the fingerprint the
+vendor publishes where there is one (Google, Microsoft, 1Password).
+
 pacdeb never asks for or stores your password. Installing and removing run `sudo pacman`
 in your terminal, so you see the usual sudo prompt and pacman's own confirmation. If
 pacman stops, nothing is installed or removed. Downloads and builds show a progress bar.
@@ -181,6 +188,55 @@ behave the same.
 
 `pacdeb inspect <file.deb>` shows what is in a deb, and `pacdeb convert --dry-run
 <file.deb>` shows everything converting it would do, including every warning.
+
+## What it can and cannot do
+
+pacdeb works best for desktop apps that bring what they need with them: Electron apps,
+Chromium-based browsers, and apps that bundle their own libraries. It has been tested
+with all fifteen built in apps, VS Code and Chrome Remote Desktop. Things to know:
+
+- **It does not run Debian's install scripts.** It reads them and turns the steps it
+  understands into parts of the package. Steps it does not understand are skipped and
+  listed as warnings, so an app that depends on one of them may need setting up by hand.
+  Read the warnings the first time you install an app.
+- **Some dependencies have no Arch name.** pacdeb maps Debian package names to Arch
+  ones and checks them against the Arch repositories. A name it cannot map is left out
+  and reported, never guessed. An app built against a library version Arch does not
+  ship (for example an older ffmpeg) may then not start.
+- **Background services are not started for you.** For apps with a system service,
+  like Mullvad VPN and RustDesk, pacdeb prints the `systemctl` command that starts it.
+- **It is not for system software.** Kernel modules, drivers, libraries that other
+  packages use, and desktop environments belong in Arch's own packages. Debian-specific
+  security policies (AppArmor, SELinux) are not carried over.
+- **There is no dpkg.** Apps that call `dpkg` or `apt` themselves at runtime will not
+  find them. Apps that update themselves in their own folder, like Discord, still do.
+- **apt support covers what apps need**: signed binary repositories over http or https.
+  Unsigned repositories, source packages and apt's pinning and priorities are not
+  supported. Only x86_64 has been tested; arm64 should work but has not been tried.
+- **Downloads are only as trustworthy as their source.** Repository indexes are checked
+  against their signing key, and packages against the checksums the index or the
+  vendor publishes. A plain download link with no published checksum is only protected
+  by HTTPS. pacdeb repackages the vendor's binaries; it does not audit them.
+- **Package names can change.** When an Arch repository or the AUR already has a
+  package with the app's name, pacdeb's build gets a `-deb` suffix, as described below.
+
+### Chrome Remote Desktop
+
+Chrome Remote Desktop installs and its host starts, but on CachyOS it does not work the
+way it does on Ubuntu, and we do not recommend it:
+
+- It cannot show your current desktop. On KDE Plasma it starts a separate, new desktop
+  session in a virtual display, and connecting to the session you are already logged
+  in to is not supported.
+- That separate session needs Plasma's X11 session (`plasma-x11-session`) installed.
+- pacdeb works around two Debian assumptions automatically: Arch's X server only lets
+  console users start it, so the host uses a virtual X server (Xvfb) instead, and
+  Debian's `/etc/X11/Xsession`, which the host runs to start a desktop, does not exist
+  on Arch, so pacdeb provides one. Even so, expect rough edges.
+
+To reach your actual desktop remotely on KDE, use KDE's own remote desktop (`krdp`,
+in System Settings under Remote Desktop) with any RDP client, over a VPN such as
+Tailscale if you connect from outside your network.
 
 ## Files
 
