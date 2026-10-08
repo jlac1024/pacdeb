@@ -1,7 +1,7 @@
 //! Where new versions of an app come from: direct URLs and feeds, apt repositories,
 //! GitHub releases, or nowhere (manual).
 
-mod apt;
+pub mod apt;
 mod direct;
 mod github;
 pub mod gpg;
@@ -24,6 +24,28 @@ pub struct Latest {
     pub checksum: Option<Checksum>,
     /// For direct sources without a feed: the server's ETag and Last-Modified.
     pub head: Option<Head>,
+}
+
+/// Downloads an apt repository's package index for one component and architecture,
+/// after checking the repository's signature with `key` and the index's checksum
+/// against the signed Release file. `gnupg_home` is a scratch folder for gpgv.
+pub fn apt_index(repo: &str, suite: &str, component: &str, arch: &str, key: &Path, gnupg_home: &Path) -> Result<String> {
+    let dists = format!("{}/dists/{suite}", repo.trim_end_matches('/'));
+    let release = match net::get_bytes(&format!("{dists}/InRelease"), &[]) {
+        Ok(signed) => gpg::verify_clearsigned(&signed, key, gnupg_home)?,
+        // Older repositories sign Release separately.
+        Err(e) if net::not_found(&e) => {
+            let data = net::get_bytes(&format!("{dists}/Release"), &[])?;
+            let sig = net::get_bytes(&format!("{dists}/Release.gpg"), &[])?;
+            gpg::verify_detached(&data, &sig, key, gnupg_home)?;
+            data
+        }
+        Err(e) => return Err(e),
+    };
+    let release = String::from_utf8_lossy(&release);
+    let file = apt::index_file(&release, component, arch)?;
+    let raw = net::get_bytes(&format!("{dists}/{}", file.path), &[])?;
+    apt::read_index(&file, &raw)
 }
 
 /// Asks the source what its newest version is. Only feeds and indexes are fetched,
@@ -74,23 +96,8 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config_di
             let key = config_dir.join(key);
             let home = cache_dir.join("gnupg").join(app);
             let repo = repo.trim_end_matches('/');
-            let dists = format!("{repo}/dists/{suite}");
-            let release = match net::get_bytes(&format!("{dists}/InRelease"), &[]) {
-                Ok(signed) => gpg::verify_clearsigned(&signed, &key, &home)?,
-                // Older repositories sign Release separately.
-                Err(e) if net::not_found(&e) => {
-                    let data = net::get_bytes(&format!("{dists}/Release"), &[])?;
-                    let sig = net::get_bytes(&format!("{dists}/Release.gpg"), &[])?;
-                    gpg::verify_detached(&data, &sig, &key, &home)?;
-                    data
-                }
-                Err(e) => return Err(e),
-            };
-            let release = String::from_utf8_lossy(&release);
             let arch = arch.as_deref().unwrap_or(host_arch());
-            let file = apt::index_file(&release, component, arch)?;
-            let raw = net::get_bytes(&format!("{dists}/{}", file.path), &[])?;
-            let index = apt::read_index(&file, &raw)?;
+            let index = apt_index(repo, suite, component, arch, &key, &home)?;
             let package = package.as_deref().unwrap_or(app);
             let Some(c) = apt::pick(&index, package, arch)? else {
                 bail!("the repository has no {package} for {arch}");

@@ -86,6 +86,39 @@ pub fn pick(index: &str, package: &str, arch: &str) -> Result<Option<Candidate>>
     Ok(best.map(|(_, c)| c))
 }
 
+/// One package in a repository's index, for browsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub name: String,
+    pub version: String,
+    /// The first line of the description.
+    pub summary: String,
+}
+
+/// Every package for `arch` (or arch independent) in an index, the highest version of
+/// each, sorted by name.
+pub fn list(index: &str, arch: &str) -> Result<Vec<Listed>> {
+    let mut best: std::collections::BTreeMap<String, (DebVersion, Listed)> = std::collections::BTreeMap::new();
+    for para in paragraphs(index) {
+        let c = Control::parse(&para).context("the repository's package index")?;
+        if !matches!(c.get("Architecture"), Some(a) if a == arch || a == "all") {
+            continue;
+        }
+        let (Some(name), Some(version)) = (c.get("Package"), c.get("Version")) else {
+            continue;
+        };
+        let Ok(parsed) = DebVersion::parse(version) else {
+            continue;
+        };
+        if best.get(name).is_some_and(|(b, _)| *b >= parsed) {
+            continue;
+        }
+        let summary = c.get("Description").and_then(|d| d.lines().next()).unwrap_or_default().trim().to_string();
+        best.insert(name.to_string(), (parsed, Listed { name: name.to_string(), version: version.to_string(), summary }));
+    }
+    Ok(best.into_values().map(|(_, l)| l).collect())
+}
+
 fn paragraphs(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -117,6 +150,17 @@ pub fn host_arch() -> &'static str {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn lists_every_package_once() {
+        let index = "Package: b\nVersion: 1.0\nArchitecture: amd64\nDescription: Bee\n more text\n\n\
+                     Package: a\nVersion: 2.0\nArchitecture: all\nDescription: Ay\n\n\
+                     Package: b\nVersion: 1.2\nArchitecture: amd64\nDescription: Newer bee\n\n\
+                     Package: c\nVersion: 1.0\nArchitecture: arm64\nDescription: Not for this machine\n";
+        let got = list(index, "amd64").unwrap();
+        let want = [("a", "2.0", "Ay"), ("b", "1.2", "Newer bee")];
+        assert_eq!(got.iter().map(|l| (l.name.as_str(), l.version.as_str(), l.summary.as_str())).collect::<Vec<_>>(), want);
+    }
 
     fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sources").join(name)).unwrap()

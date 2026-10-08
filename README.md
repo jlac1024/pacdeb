@@ -26,8 +26,9 @@ At runtime pacdeb uses `makepkg` to build packages (it writes them itself with
 ## The app
 
 `deploy/pacdeb-gui` is a window for the same things: the apps pacdeb tracks and their
-versions, checking and updating, adding and editing sources, converting a .deb you open
-or drop on it, and the settings. `./setup.sh` adds it to the app menu and makes it an
+versions, checking and updating, adding and editing apps, the sources they come from
+(apt repositories can be browsed for every package they offer, and new ones added),
+converting a .deb you open or drop on it, and the settings. `./setup.sh` adds it to the app menu and makes it an
 "Open with" choice for .deb files.
 
 It asks before installing, listing each package and any installed package it replaces,
@@ -71,6 +72,7 @@ so you see the usual sudo prompt and pacman's own confirmation.
 | `set [app]` | Change a tracked app, or the global channel |
 | `list` | Tracked apps with built and installed versions |
 | `check [app]` | Report available updates, download nothing |
+| `packages <app>` | List everything in an app's apt repository |
 | `update [app]` | Download, build and install anything newer |
 | `remove <app>` | Stop tracking an app (leaves it installed) |
 | `timer enable` | Check after login and every 6 hours, with a desktop notification for new versions |
