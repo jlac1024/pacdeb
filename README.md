@@ -73,7 +73,8 @@ so you see the usual sudo prompt and pacman's own confirmation.
 | `list [--upgradable]` | Tracked apps with built and installed versions |
 | `check [app]` | Ask the sources now without remembering the answer |
 | `packages <app>` | List everything in an app's apt repository |
-| `remove <app>` | Stop tracking an app (leaves it installed) |
+| `remove <app>...` | Uninstall apps and stop tracking them (like `apt remove`) |
+| `untrack <app>` | Stop tracking an app, leave it installed |
 | `timer enable` | Check after login and every 6 hours, with a desktop notification for new versions |
 | `repo init` | Publish builds to a local pacman repository, so system updates install them |
 

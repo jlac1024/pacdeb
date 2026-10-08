@@ -1,5 +1,6 @@
-//! Hands built packages to pacman. pacdeb never asks for or stores the sudo password:
-//! sudo and pacman talk to the terminal directly.
+//! Hands built packages to pacman, and removes them. pacdeb never asks for or stores
+//! the sudo password: sudo and pacman talk to the terminal directly, and pacman asks
+//! for its own confirmation.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -11,6 +12,24 @@ use crate::error::{Result, bail};
 pub fn install(pkgs: &[PathBuf]) -> Result<()> {
     let custom = std::env::var("PACDEB_INSTALL_CMD").ok().filter(|c| !c.trim().is_empty());
     run(custom.as_deref(), pkgs)
+}
+
+/// Runs `sudo pacman -R <pkgs>`, or `PACDEB_REMOVE_CMD <pkgs>` when that is set.
+pub fn uninstall(pkgs: &[String]) -> Result<()> {
+    let custom = std::env::var("PACDEB_REMOVE_CMD").ok().filter(|c| !c.trim().is_empty());
+    let (program, args): (String, Vec<String>) = match custom {
+        Some(cmd) => {
+            let mut parts = cmd.split_whitespace().map(String::from);
+            (parts.next().unwrap_or_default(), parts.collect())
+        }
+        None => ("sudo".into(), vec!["pacman".into(), "-R".into()]),
+    };
+    let shown = std::iter::once(program.clone()).chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
+    match Command::new(&program).args(&args).args(pkgs).status() {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => bail!("{shown} did not remove {} ({s}); nothing was changed", pkgs.join(" ")),
+        Err(e) => bail!("cannot run {program}: {e}"),
+    }
 }
 
 fn run(custom: Option<&str>, pkgs: &[PathBuf]) -> Result<()> {

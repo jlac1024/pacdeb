@@ -643,7 +643,7 @@ fn remove(name: &str, with_apps: bool) -> Result<()> {
         bail!("{} from {name}: {}. Remove {them} too with --with-apps, or move {them} to another repository first", plural(apps.len(), "app comes", "apps come"), apps.join(", "));
     }
     for a in &apps {
-        crate::apps::remove(a)?;
+        crate::apps::untrack(a)?;
     }
     let mut config = Config::load(&paths.config)?;
     config.apt.remove(name);
