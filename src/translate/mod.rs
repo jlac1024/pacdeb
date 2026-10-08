@@ -602,7 +602,9 @@ fn mentioned_paths(control_files: &std::collections::BTreeMap<String, Vec<u8>>) 
 /// launcher there and exactly one elsewhere, it gets a copy.
 fn add_lone_launcher(nodes: &mut Vec<Node>, changes: &mut Vec<String>) {
     let is_launcher = |n: &&Node| n.kind == NodeKind::File && n.path.ends_with(".desktop");
-    if nodes.iter().filter(is_launcher).any(|n| pathutil::is_under(&n.path, "/usr/share/applications")) {
+    // A link counts too: Discord's script links its launcher into the folder.
+    let in_menu_folder = |n: &Node| !n.is_dir() && n.path.ends_with(".desktop") && pathutil::is_under(&n.path, "/usr/share/applications");
+    if nodes.iter().any(in_menu_folder) {
         return;
     }
     let elsewhere: Vec<&Node> = nodes.iter().filter(is_launcher).filter(|n| !n.path.starts_with("/etc/xdg/autostart/")).collect();
@@ -610,6 +612,9 @@ fn add_lone_launcher(nodes: &mut Vec<Node>, changes: &mut Vec<String>) {
         return;
     };
     let to = format!("/usr/share/applications/{}", pathutil::basename(&only.path));
+    if nodes.iter().any(|n| n.path == to) {
+        return;
+    }
     changes.push(format!("added {to}, a copy of {}, so app menus find the launcher", only.path));
     let copy = Node { path: to, ..(*only).clone() };
     nodes.push(copy);
@@ -746,6 +751,22 @@ weird-tool --setup
         .entry(TestEntry::file("./usr/share/icons/hicolor/256x256/apps/demo.png", 0o644, b"png"))
         .build();
         Deb::from_reader(Cursor::new(bytes)).unwrap()
+    }
+
+    #[test]
+    fn does_not_copy_a_launcher_the_script_already_links() {
+        // Discord: the launcher lives in /usr/share/discord and postinst links it into
+        // the menu folder, so there must be one entry there, the link.
+        let bytes = DebBuilder::new("Package: discord\nVersion: 1.0\nArchitecture: amd64\n")
+            .control_file("postinst", "#!/bin/sh\nln -sf /usr/share/discord/discord.desktop /usr/share/applications/discord.desktop\n")
+            .entry(TestEntry::file("./usr/share/discord/discord.desktop", 0o644, b"[Desktop Entry]\nType=Application\nName=Discord\nExec=/usr/share/discord/Discord\n"))
+            .entry(TestEntry::file("./usr/share/discord/Discord", 0o755, b"x"))
+            .build();
+        let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
+        let t = translate(&mut deb, &Tables::builtin(), 1, &BareSystem).unwrap();
+        let at: Vec<&Node> = t.package.nodes.iter().filter(|n| n.path == "/usr/share/applications/discord.desktop").collect();
+        assert_eq!(at.len(), 1, "{at:?}");
+        assert!(matches!(at[0].kind, NodeKind::Symlink(_)), "{:?}", at[0].kind);
     }
 
     #[test]
