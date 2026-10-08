@@ -101,23 +101,17 @@ repositories in `pacman.conf`, so `pacman -Syu`, the CachyOS updater and Shelly 
 install pacdeb apps like any other package. With the timer on, new versions are built
 in the background and wait in the repository for your next system update.
 
-One-time setup (the folder is outside your home because pacman downloads as the
-`alpm` user):
+One-time setup, after `build/build.sh`:
 
 ```
-sudo install -d -o "$USER" -m 755 /var/lib/pacdeb/repo
-pacdeb repo init
-sudo pacman-key --add /var/lib/pacdeb/repo/pacdeb.pub.asc
-sudo pacman-key --lsign-key <fingerprint printed by repo init>
+./setup.sh
 ```
 
-Then add to the end of `/etc/pacman.conf`:
-
-```
-[pacdeb]
-SigLevel = Required
-Server = file:///var/lib/pacdeb/repo
-```
+It creates `/var/lib/pacdeb/repo` (outside your home, because pacman downloads as the
+`alpm` user), runs `pacdeb repo init`, tells pacman to trust pacdeb's signing key,
+adds a `[pacdeb]` section to the end of `/etc/pacman.conf` (keeping a backup), and
+turns on the timer. It asks for your password for the steps that need root, skips
+steps already done, and `./setup.sh --remove` undoes all of it.
 
 Packages and the database are signed with a key only pacdeb uses, so pacman refuses
 anything else placed in that folder.

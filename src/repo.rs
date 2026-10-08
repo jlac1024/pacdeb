@@ -212,6 +212,20 @@ fn is_package_of(file: &str, pkgname: &str) -> bool {
     is_pkg && file.strip_prefix(pkgname).and_then(|r| r.strip_prefix('-')).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
 }
 
+/// `pacdeb repo remove`: stop publishing. The folder and pacman's settings are left
+/// for the person (or setup.sh --remove) to take away.
+pub fn forget() -> Result<()> {
+    let paths = Paths::from_env()?;
+    let mut config = Config::load(&paths.config)?;
+    let Some(repo) = config.settings.repo.take() else {
+        println!("No repository set up.");
+        return Ok(());
+    };
+    config.save(&paths.config)?;
+    println!("pacdeb no longer publishes to {}. The folder and its packages are left as they are.", repo.dir);
+    Ok(())
+}
+
 /// `pacdeb repo status`.
 pub fn status() -> Result<()> {
     let paths = Paths::from_env()?;

@@ -72,7 +72,8 @@ pub fn run(args: &[String]) -> ExitCode {
             [a] if a == "init" => finish(crate::repo::init(None)),
             [a, dir] if a == "init" && !dir.starts_with('-') => finish(crate::repo::init(Some(dir))),
             [a] if a == "status" => finish(crate::repo::status()),
-            _ => usage_error("repo", "usage: pacdeb repo init [dir], or pacdeb repo status"),
+            [a] if a == "remove" => finish(crate::repo::forget()),
+            _ => usage_error("repo", "usage: pacdeb repo init [dir] | status | remove"),
         },
         "timer" => match &args[1..] {
             [action] if ["enable", "disable", "status", "run"].contains(&action.as_str()) => finish(crate::timer::run(action)),

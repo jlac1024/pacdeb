@@ -102,7 +102,12 @@ fn enable(dir: &Path) -> Result<()> {
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--now", TIMER])?;
     println!("Update checks are on: 5 minutes after login, then every 6 hours.");
-    println!("New versions show up as a notification; its Update button runs 'pacdeb update' in a terminal.");
+    let paths = crate::paths::Paths::from_env()?;
+    if crate::registry::Config::load(&paths.config)?.settings.repo.is_some() {
+        println!("New versions are built in the background and installed by your next system update.");
+    } else {
+        println!("New versions show up as a notification; its Update button runs 'pacdeb update' in a terminal.");
+    }
     println!("The timer runs {}; run 'pacdeb timer enable' again if you move it.", exe.display());
     Ok(())
 }

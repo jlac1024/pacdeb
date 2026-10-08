@@ -18,7 +18,7 @@ Keeping apps updated:
   update [app]                  Download, build and install anything newer
   remove <app>                  Stop tracking an app (does not uninstall it)
   timer enable|disable|status   Check on a schedule and notify about updates
-  repo init [dir] | status      Publish builds to a local pacman repository
+  repo init|status|remove       Publish builds to a local pacman repository
 
 Run 'pacdeb help <command>' or 'pacdeb <command> --help' for details.
 
@@ -187,6 +187,7 @@ gnome-terminal, alacritty, kitty, foot and others).
 const REPO: &str = "\
 Usage: pacdeb repo init [dir]
        pacdeb repo status
+       pacdeb repo remove
 
 Keeps a local pacman repository of everything pacdeb builds, so pacdeb apps
 update with the rest of the system: pacman -Syu, the CachyOS updater, Shelly and
@@ -197,6 +198,10 @@ AUR helpers all read the repositories in pacman.conf.
                print the steps that tell pacman to trust it. The folder must
                exist and be yours: sudo install -d -o \"$USER\" -m 755 <dir>
   status       Show the packages in it and whether pacman.conf lists it
+  remove       Stop publishing to it (the folder is left)
+
+setup.sh in the project folder does the whole setup, sudo steps included, and
+'setup.sh --remove' undoes it.
 
 The folder is outside your home because pacman downloads as the 'alpm' user.
 Packages and the database are signed; pacman refuses anything pacdeb did not sign.
