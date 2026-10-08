@@ -6,6 +6,8 @@
 #   4. the [pacdeb] section in pacman.conf
 #   5. the timer that builds new versions in the background
 #   6. a start menu entry for pacdeb-gui, which also opens .deb files
+#   7. the pacdeb command on your PATH (~/.local/bin) and tab completion for
+#      fish, bash and zsh
 # Steps already done are skipped, so it is safe to run again. sudo is used only for
 # the steps that need root. 'setup.sh --remove' undoes all of it.
 set -euo pipefail
@@ -16,6 +18,11 @@ repo_dir="${PACDEB_REPO_DIR:-/var/lib/pacdeb/repo}"
 pacman_conf="${PACMAN_CONF:-/etc/pacman.conf}"
 apps_dir="${PACDEB_APPS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/applications}"
 desktop_file="$apps_dir/pacdeb.desktop"
+bin_dir="${PACDEB_BIN_DIR:-$HOME/.local/bin}"
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+fish_file="${PACDEB_FISH_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions}/pacdeb.fish"
+bash_file="${PACDEB_BASH_DIR:-$data_home/bash-completion/completions}/pacdeb"
+zsh_file="${PACDEB_ZSH_DIR:-$data_home/zsh/site-functions}/_pacdeb"
 # Tests set SUDO to empty and PACMAN_KEY_CMD to a pacman-key with its own keyring.
 sudo="${SUDO-sudo}"
 read -r -a pacman_key <<< "${PACMAN_KEY_CMD:-pacman-key}"
@@ -100,6 +107,32 @@ setup() {
         echo "    skipped: deploy/pacdeb-gui is missing (run build/build.sh)"
     fi
 
+    step "pacdeb command and tab completion"
+    mkdir -p "$bin_dir"
+    for bin in pacdeb pacdeb-gui; do
+        target="$root/deploy/$bin"
+        link="$bin_dir/$bin"
+        if [[ -e "$link" && ! -L "$link" ]]; then
+            echo "    $link exists and is not pacdeb's link; left as it is"
+        elif [[ -x "$target" ]]; then
+            ln -sfn "$target" "$link"
+            echo "    $link"
+        fi
+    done
+    for shell_file in "fish:$fish_file" "bash:$bash_file" "zsh:$zsh_file"; do
+        shell="${shell_file%%:*}"
+        file="${shell_file#*:}"
+        mkdir -p "$(dirname "$file")"
+        "$pacdeb" completions "$shell" > "$file"
+        echo "    $file"
+    done
+    case ":$PATH:" in
+        *":$bin_dir:"*) ;;
+        *) echo "    note: $bin_dir is not on your PATH; add it to use 'pacdeb' directly" ;;
+    esac
+    echo "    zsh only finds the completion if $(dirname "$zsh_file") is in its fpath"
+    echo "    Open a new terminal for completion to take effect."
+
     step "Done"
     echo "pacdeb apps now show up in your system updates once pacman refreshes its"
     echo "package lists (the CachyOS updater and 'sudo pacman -Syu' both do that)."
@@ -111,6 +144,22 @@ remove() {
 
     step "Update timer"
     "$pacdeb" timer disable
+
+    step "pacdeb command and tab completion"
+    for bin in pacdeb pacdeb-gui; do
+        link="$bin_dir/$bin"
+        # Only links pointing into this pacdeb folder are ours to remove.
+        if [[ -L "$link" && "$(readlink "$link")" == "$root/deploy/$bin" ]]; then
+            rm "$link"
+            echo "    removed $link"
+        fi
+    done
+    for file in "$fish_file" "$bash_file" "$zsh_file"; do
+        if [[ -f "$file" ]] && grep -q "pacdeb completions" "$file"; then
+            rm "$file"
+            echo "    removed $file"
+        fi
+    done
 
     step "Start menu entry"
     if [[ -f "$desktop_file" ]]; then
