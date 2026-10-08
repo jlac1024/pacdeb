@@ -59,12 +59,12 @@ pub fn install_script(pkg: &Package) -> Option<String> {
     if pkg.install_note.is_empty() {
         return None;
     }
-    let mut s = String::from("post_install() {\n  cat <<'FERRY_NOTE'\n");
+    let mut s = String::from("post_install() {\n  cat <<'PACDEB_NOTE'\n");
     for line in &pkg.install_note {
         s.push_str(line);
         s.push('\n');
     }
-    s.push_str("FERRY_NOTE\n}\n");
+    s.push_str("PACDEB_NOTE\n}\n");
     Some(s)
 }
 
@@ -180,7 +180,7 @@ package() {
         assert!(render(&p, "x.deb").contains("install='demo.install'\n"));
         assert_eq!(
             install_script(&p).unwrap(),
-            "post_install() {\n  cat <<'FERRY_NOTE'\nTo start it:\n  sudo systemctl enable --now demo.service\nFERRY_NOTE\n}\n"
+            "post_install() {\n  cat <<'PACDEB_NOTE'\nTo start it:\n  sudo systemctl enable --now demo.service\nPACDEB_NOTE\n}\n"
         );
     }
 }
