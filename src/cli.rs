@@ -6,7 +6,7 @@ use crate::help;
 
 pub fn run(args: &[String]) -> ExitCode {
     let Some(first) = args.first() else {
-        print!("{}", help::OVERVIEW);
+        print!("{}", help::overview());
         return ExitCode::SUCCESS;
     };
     // 'pacdeb <command> --help' anywhere in the arguments shows that command's page.
@@ -17,12 +17,12 @@ pub fn run(args: &[String]) -> ExitCode {
 
     match first.as_str() {
         "-h" | "--help" => {
-            print!("{}", help::OVERVIEW);
+            print!("{}", help::overview());
             ExitCode::SUCCESS
         }
         "help" => match &args[1..] {
             [] => {
-                print!("{}", help::OVERVIEW);
+                print!("{}", help::overview());
                 ExitCode::SUCCESS
             }
             [cmd] => match help::page(cmd) {
@@ -34,8 +34,8 @@ pub fn run(args: &[String]) -> ExitCode {
             },
             _ => usage_error("", "usage: pacdeb help [command]"),
         },
-        "-V" | "--version" => {
-            println!("pacdeb {}", env!("CARGO_PKG_VERSION"));
+        "-V" | "--version" | "version" => {
+            println!("pacdeb {}", crate::version());
             ExitCode::SUCCESS
         }
         "inspect" => inspect(&args[1..]),

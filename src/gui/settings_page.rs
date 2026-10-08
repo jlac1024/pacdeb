@@ -33,6 +33,11 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     repo_group.add(&repo_pkgs);
     page.add(&repo_group);
 
+    let about = adw::PreferencesGroup::builder().title("About").build();
+    let version = adw::ActionRow::builder().title("Version").subtitle(glib::markup_escape_text(&format!("pacdeb {}", pacdeb::version()))).subtitle_selectable(true).build();
+    about.add(&version);
+    page.add(&about);
+
     let folders = adw::PreferencesGroup::builder().title("Folders").build();
     let rows: Vec<adw::ActionRow> = ["Settings", "Build records", "Downloads and builds"]
         .iter()

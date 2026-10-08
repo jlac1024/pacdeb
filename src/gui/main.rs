@@ -64,13 +64,17 @@ fn main() -> ExitCode {
         match a.as_str() {
             "--page" => page = rest.next().cloned(),
             "--search" => search = rest.next().cloned(),
+            "-V" | "--version" => {
+                println!("pacdeb-gui {}", pacdeb::version());
+                return ExitCode::SUCCESS;
+            }
             "-h" | "--help" => {
-                println!("Usage: pacdeb-gui [--page apps|search|sources|convert|settings] [--search <words>] [file.deb]");
+                println!("Usage: pacdeb-gui [--page apps|search|sources|convert|settings] [--search <words>] [--version] [file.deb]");
                 return ExitCode::SUCCESS;
             }
             _ if !a.starts_with('-') => deb = Some(std::path::PathBuf::from(a)),
             other => {
-                eprintln!("pacdeb-gui: unknown option '{other}'. Usage: pacdeb-gui [--page apps|search|sources|convert|settings] [--search <words>] [file.deb]");
+                eprintln!("pacdeb-gui: unknown option '{other}'. Usage: pacdeb-gui [--page apps|search|sources|convert|settings] [--search <words>] [--version] [file.deb]");
                 return ExitCode::from(2);
             }
         }
@@ -89,6 +93,9 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
     let stack = adw::ViewStack::new();
     let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
     let header = adw::HeaderBar::builder().title_widget(&switcher).build();
+    let menu = gtk::gio::Menu::new();
+    menu.append(Some("About pacdeb"), Some("app.about"));
+    header.pack_end(&gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Menu").build());
     let toasts = adw::ToastOverlay::new();
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
@@ -103,6 +110,12 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
         .content(&toasts)
         .build();
     let ctx = Rc::new(Ctx { window: window.clone(), toasts, refreshers: RefCell::new(Vec::new()) });
+    let about = gtk::gio::SimpleAction::new("about", None);
+    about.connect_activate({
+        let window = window.clone();
+        move |_, _| show_about(&window)
+    });
+    app.add_action(&about);
 
     stack.add_titled_with_icon(&apps_page::build(&ctx), Some("apps"), "Apps", "view-list-symbolic");
     let (search_widget, search_entry) = search_page::build(&ctx);
@@ -131,6 +144,17 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
     }
 }
 
+fn show_about(window: &adw::ApplicationWindow) {
+    let about = adw::AboutDialog::builder()
+        .application_name("pacdeb")
+        .application_icon("system-software-install")
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments(format!("Turns Debian .deb packages into pacman packages and keeps them updated, like apt.\n\nBuild {}", pacdeb::build()))
+        .developer_name("Jeff")
+        .build();
+    about.present(Some(window));
+}
+
 /// Debug builds only: PACDEB_GUI_OPEN=add | edit:<app> | install:<package file> |
 /// browse:<app or repository> | repo:<repository> | remove:<app> | build:<deb> opens
 /// that dialog at startup, for checking it with PACDEB_GUI_SNAPSHOT.
@@ -152,6 +176,7 @@ fn open_for_tests(ctx: &Rc<Ctx>) {
             }
         }
         Some(("repo", name)) => repo_dialog::open(ctx, name),
+        None if what == "about" => show_about(&ctx.window),
         Some(("build", deb)) => run::cli_and_install(ctx, "Building", &["convert", "--direct", "--out", "build/sandbox/out", deb]),
         Some(("remove", app)) => {
             let paths = pacdeb::paths::Paths::from_env().expect("paths");
