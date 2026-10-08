@@ -206,15 +206,82 @@ fn short(fpr: &str) -> &str {
     &fpr[fpr.len().saturating_sub(16)..]
 }
 
-/// Every package a saved repository offers, across its components.
+/// Every package a saved repository offers, across its components, fetched now.
 pub fn packages(name: &str, repo: &AptRepoConfig, paths: &Paths) -> Result<Vec<Listed>> {
     let Some(key) = &repo.key else {
         bail!("apt repository {name} has no signing key; add one with 'pacdeb apt key {name} --key-url <url>'");
     };
     let fetched = apt_fetch::fetch(name, repo, &paths.config.join(key), &paths.cache)?;
+    listed(&fetched.indexes, repo)
+}
+
+/// Like `packages`, from the lists of the last 'pacdeb update', fetching only when
+/// the repository has never been read.
+pub fn packages_cached(name: &str, repo: &AptRepoConfig, paths: &Paths) -> Result<Vec<Listed>> {
+    let cached = apt_fetch::cached_indexes(name, &paths.cache);
+    if cached.is_empty() {
+        return packages(name, repo, paths);
+    }
+    listed(&cached, repo)
+}
+
+/// A package found in a saved repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub repo: String,
+    pub package: Listed,
+}
+
+/// Every package in every saved repository, and the repositories that could not be read.
+pub fn all_packages(config: &Config, paths: &Paths) -> (Vec<Found>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut failed = Vec::new();
+    for (name, repo) in &config.apt {
+        match packages_cached(name, repo, paths) {
+            Ok(list) => found.extend(list.into_iter().map(|package| Found { repo: name.clone(), package })),
+            Err(e) => failed.push(format!("{name}: {e}")),
+        }
+    }
+    (found, failed)
+}
+
+/// Packages whose name or description contains every word of `term`, exact and
+/// leading name matches first.
+pub fn search(all: &[Found], term: &str) -> Vec<Found> {
+    let words: Vec<String> = term.split_whitespace().map(str::to_lowercase).collect();
+    let mut hits: Vec<&Found> = all
+        .iter()
+        .filter(|f| {
+            let hay = format!("{} {}", f.package.name.to_lowercase(), f.package.summary.to_lowercase());
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .collect();
+    let first = words.first().cloned().unwrap_or_default();
+    hits.sort_by_key(|f| {
+        let n = f.package.name.to_lowercase();
+        (n != first, !n.starts_with(&first), n, f.repo.clone())
+    });
+    hits.into_iter().cloned().collect()
+}
+
+/// The newest `name` across all saved repositories.
+pub fn find(all: &[Found], name: &str) -> Option<Found> {
+    let mut best: Option<&Found> = None;
+    for f in all.iter().filter(|f| f.package.name == name) {
+        let newer = best.is_none_or(|b| {
+            matches!((crate::version::DebVersion::parse(&f.package.version), crate::version::DebVersion::parse(&b.package.version)), (Ok(n), Ok(o)) if n > o)
+        });
+        if newer {
+            best = Some(f);
+        }
+    }
+    best.cloned()
+}
+
+fn listed(indexes: &[(String, String)], repo: &AptRepoConfig) -> Result<Vec<Listed>> {
     let arch = apt_fetch::arch(repo);
     let mut all: Vec<Listed> = Vec::new();
-    for (_, index) in &fetched.indexes {
+    for (_, index) in indexes {
         for l in apt::list(index, &arch)? {
             match all.iter_mut().find(|a| a.name == l.name) {
                 Some(a) => {
@@ -228,6 +295,46 @@ pub fn packages(name: &str, repo: &AptRepoConfig, paths: &Paths) -> Result<Vec<L
     }
     all.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(all)
+}
+
+/// `pacdeb search <words>`.
+pub fn run_search(term: &str) -> Result<()> {
+    let paths = Paths::from_env()?;
+    let config = Config::load(&paths.config)?;
+    if config.apt.is_empty() {
+        bail!("no apt repositories saved to search; add one with 'pacdeb apt add'");
+    }
+    let (all, failed) = all_packages(&config, &paths);
+    let st = Style::for_stdout();
+    for f in &failed {
+        println!("{} {f}", st.warn("warning:"));
+    }
+    let hits = search(&all, term);
+    let tracked = tracked_packages(&config);
+    for f in &hits {
+        let mark = if tracked.contains(&(f.repo.clone(), f.package.name.clone())) { " [tracked]" } else { "" };
+        println!("{}/{} {}{mark}\n  {}", st.bold(&f.package.name), f.repo, f.package.version, f.package.summary);
+    }
+    let presets: Vec<String> = crate::registry::presets().into_keys().filter(|p| p.contains(&term.to_lowercase())).collect();
+    for p in &presets {
+        println!("{} (built in)\n  install with 'pacdeb install {p}'", st.bold(p));
+    }
+    if hits.is_empty() && presets.is_empty() {
+        bail!("nothing matches '{term}'; 'pacdeb update' refreshes the package lists");
+    }
+    Ok(())
+}
+
+/// (repository, package) of every app taking a package from a saved repository.
+pub fn tracked_packages(config: &Config) -> Vec<(String, String)> {
+    config
+        .apps
+        .iter()
+        .filter_map(|(n, a)| match &a.source {
+            crate::registry::SourceConfig::Apt { repository, package } => Some((repository.clone(), package.clone().unwrap_or_else(|| n.clone()))),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Options of the `pacdeb apt` commands.
@@ -619,6 +726,27 @@ mod tests {
 
         let fresh = Health { info: None, ..Default::default() };
         assert_eq!(warnings(&repo(), &fresh, now), ["never checked yet"]);
+    }
+
+    #[test]
+    fn searches_and_finds_packages() {
+        let f = |repo: &str, name: &str, version: &str, summary: &str| Found {
+            repo: repo.into(),
+            package: Listed { name: name.into(), version: version.into(), summary: summary.into() },
+        };
+        let all = [
+            f("ms", "code-insiders", "1.142.0-1", "Code editing. Redefined."),
+            f("ms", "code", "1.141.0-1", "Code editing. Redefined."),
+            f("other", "code", "1.141.0-2", "A rebuild"),
+            f("other", "vscodium", "1.0-1", "Free code editor"),
+            f("other", "tool", "2.0", "Unrelated"),
+        ];
+        let names = |v: Vec<Found>| v.into_iter().map(|f| format!("{}/{}", f.repo, f.package.name)).collect::<Vec<_>>();
+        assert_eq!(names(search(&all, "code")), ["ms/code", "other/code", "ms/code-insiders", "other/vscodium"]);
+        assert_eq!(names(search(&all, "free editor")), ["other/vscodium"]);
+        assert!(search(&all, "nothing").is_empty());
+        assert_eq!(find(&all, "code").map(|f| (f.repo, f.package.version)), Some(("other".into(), "1.141.0-2".into())), "highest version wins");
+        assert_eq!(find(&all, "cod"), None, "exact names only");
     }
 
     #[test]

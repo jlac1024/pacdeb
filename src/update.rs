@@ -1,5 +1,8 @@
-//! `pacdeb update` and `pacdeb install`: fetch new debs, build them and install the
-//! results with one pacman call.
+//! The apt-like commands. `pacdeb update` refreshes: it reads every saved apt
+//! repository and asks every app's source for its newest version, and remembers what
+//! it found. `pacdeb upgrade` builds and installs whatever is newer, in one pacman call.
+//! `pacdeb install <name>` installs a tracked app, a preset, or any package the saved
+//! apt repositories offer.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +21,9 @@ use crate::style::Style;
 /// How many built packages to keep per app, for rolling back by hand.
 const KEEP_BUILDS: usize = 2;
 
+/// How long what 'pacdeb update' found is used by 'pacdeb upgrade' before it asks again.
+const REFRESH_MAX_AGE: i64 = 24 * 3600;
+
 pub struct Options {
     pub name: Option<String>,
     pub file: Option<PathBuf>,
@@ -27,14 +33,127 @@ pub struct Options {
     pub notify: bool,
 }
 
-pub fn update(opts: &Options) -> Result<()> {
+/// What a refresh found: the apps with something newer, as "name old -> new".
+pub struct Refreshed {
+    pub upgradable: Vec<String>,
+    pub failed: usize,
+}
+
+/// `pacdeb update`: reads every saved apt repository (keeping its package lists) and
+/// asks every app's source what is newest, and remembers it. Downloads no debs.
+pub fn refresh(quiet: bool) -> Result<Refreshed> {
+    let paths = Paths::from_env()?;
+    let config = Config::load(&paths.config)?;
+    let mut state = State::load(&paths.state)?;
+    let st = Style::for_stdout();
+    let say = |s: String| {
+        if !quiet {
+            println!("{s}");
+        }
+    };
+    let now = crate::sources::release::now();
+    let mut failed = 0;
+    let mut lists: std::collections::BTreeMap<String, std::result::Result<Vec<(String, String)>, String>> = Default::default();
+    for (name, repo) in &config.apt {
+        let comps = if repo.is_flat() { String::new() } else { format!(" {}", repo.components.join(" ")) };
+        let result = match &repo.key {
+            Some(k) => crate::sources::apt_fetch::fetch(name, repo, &paths.config.join(k), &paths.cache).map(|f| f.indexes).map_err(|e| e.to_string()),
+            None => Err(format!("no signing key; add one with 'pacdeb apt key {name} --key-url <url>'")),
+        };
+        match &result {
+            Ok(indexes) => {
+                // Indexes list every version; count each package once.
+                let arch = crate::sources::apt_fetch::arch(repo);
+                let mut names: Vec<String> = indexes.iter().flat_map(|(_, i)| crate::sources::apt::list(i, &arch).unwrap_or_default()).map(|l| l.name).collect();
+                names.sort();
+                names.dedup();
+                let count = names.len();
+                say(format!("Get: {name} {} {}{comps} ({})", repo.url, repo.suite, crate::human::plural(count, "package", "packages")));
+            }
+            Err(e) => {
+                failed += 1;
+                say(format!("{} {name}: {e}", st.bad("Err:")));
+            }
+        }
+        lists.insert(name.clone(), result);
+    }
+    let mut upgradable = Vec::new();
+    for (name, app) in &config.apps {
+        let latest = match &app.source {
+            SourceConfig::Manual {} => continue,
+            SourceConfig::Apt { repository, package } => match (lists.get(repository), config.apt.get(repository)) {
+                (Some(Ok(indexes)), Some(repo)) => sources::apt_latest_in(indexes, repository, repo, package.as_deref().unwrap_or(name)),
+                (Some(Err(_)), _) => continue,
+                _ => Err(crate::error::Error::new(format!("the apt repository {repository} is not saved"))),
+            },
+            _ => {
+                let channel = config.channel(app);
+                let latest = sources::latest(name, &app.source, channel.as_deref(), &config, &paths.config, &paths.cache);
+                if latest.is_ok() {
+                    say(format!("Get: {name} ({})", app.source.kind()));
+                }
+                latest
+            }
+        };
+        match latest {
+            Ok(l) => {
+                if let Status::Newer { current, latest } = status(&l, state.apps.get(name)) {
+                    upgradable.push(match current {
+                        Some(c) => format!("{name} {c} -> {latest}"),
+                        None => format!("{name} {latest} (not built yet)"),
+                    });
+                } else if matches!(status(&l, state.apps.get(name)), Status::Changed(true)) {
+                    upgradable.push(format!("{name} (new download)"));
+                }
+                state.apps.entry(name.clone()).or_default().available = Some(l.to_available(now));
+            }
+            Err(e) => {
+                failed += 1;
+                say(format!("{} {name}: {e}", st.bad("Err:")));
+            }
+        }
+    }
+    state.save(&paths.state)?;
+    if !quiet {
+        match upgradable.len() {
+            0 => println!("All apps are up to date."),
+            n => {
+                println!("{} can be upgraded. Run 'pacdeb upgrade' to install, or 'pacdeb list --upgradable' to see them:", crate::human::plural(n, "app", "apps"));
+                for u in &upgradable {
+                    println!("  {u}");
+                }
+            }
+        }
+    }
+    if failed > 0 && !quiet {
+        println!("{} {} could not be read; see the errors above.", st.warn("warning:"), crate::human::plural(failed, "source", "sources"));
+    }
+    Ok(Refreshed { upgradable, failed })
+}
+
+/// What an app's source offers: what the last refresh found when that is recent,
+/// otherwise asked now.
+fn latest_for(name: &str, app: &App, config: &Config, paths: &Paths, state: &State) -> Result<Latest> {
+    let now = crate::sources::release::now();
+    if let Some(a) = state.apps.get(name).and_then(|s| s.available.as_ref()).filter(|a| now - a.checked < REFRESH_MAX_AGE) {
+        if a.url.is_some() {
+            return Ok(Latest::from_available(a));
+        }
+    }
+    let channel = config.channel(app);
+    sources::latest(name, &app.source, channel.as_deref(), config, &paths.config, &paths.cache)
+}
+
+/// `pacdeb upgrade`: builds whatever is newer than the last build and installs it all
+/// with one pacman call.
+pub fn upgrade(opts: &Options) -> Result<()> {
     let paths = Paths::from_env()?;
     let config = Config::load(&paths.config)?;
     let mut state = State::load(&paths.state)?;
     let st = Style::for_stdout();
 
     if opts.file.is_some() && opts.name.is_none() {
-        bail!("--file needs an app name: pacdeb update <app> --file <deb>");
+        bail!("--file needs an app name: pacdeb upgrade <app> --file <deb>");
     }
     let names: Vec<String> = match &opts.name {
         Some(n) if config.apps.contains_key(n) => vec![n.clone()],
@@ -70,13 +189,13 @@ pub fn update(opts: &Options) -> Result<()> {
 
     if built.is_empty() {
         if failed.is_empty() {
-            println!("Nothing to update.");
+            println!("Nothing to upgrade.");
             return Ok(());
         }
-        bail!("could not update: {}", failed.join(", "));
+        bail!("could not upgrade: {}", failed.join(", "));
     }
     if opts.notify {
-        let ready = if config.settings.repo.is_some() { "Install with your next system update." } else { "Install with 'pacdeb update'." };
+        let ready = if config.settings.repo.is_some() { "Install with your next system update." } else { "Install with 'pacdeb upgrade'." };
         if let Err(e) = crate::notify::built(&built_names, ready) {
             println!("{} could not send a notification: {e}", st.warn("warning:"));
         }
@@ -89,15 +208,14 @@ pub fn update(opts: &Options) -> Result<()> {
         install::install(&built)?;
     }
     if !failed.is_empty() {
-        bail!("could not update: {}", failed.join(", "));
+        bail!("could not upgrade: {}", failed.join(", "));
     }
     Ok(())
 }
 
 /// Checks one app, and downloads and builds it when there is something newer.
 fn update_one(name: &str, app: &App, config: &Config, direct: bool, paths: &Paths, state: &mut State) -> Result<Option<Built>> {
-    let channel = config.channel(app);
-    let latest = sources::latest(name, &app.source, channel.as_deref(), config, &paths.config, &paths.cache)?;
+    let latest = latest_for(name, app, config, paths, state)?;
     match status(&latest, state.apps.get(name)) {
         Status::UpToDate(v) => {
             println!("{name}: up to date ({v})");
@@ -108,7 +226,7 @@ fn update_one(name: &str, app: &App, config: &Config, direct: bool, paths: &Path
             Ok(None)
         }
         Status::Manual => {
-            println!("{name}: manual source, nothing to fetch; use 'pacdeb update {name} --file <deb>'");
+            println!("{name}: manual source, nothing to fetch; use 'pacdeb upgrade {name} --file <deb>'");
             Ok(None)
         }
         Status::Newer { .. } | Status::Changed(true) => {
@@ -196,6 +314,57 @@ fn record(state: &mut State, name: &str, built: &Built, latest: Option<&Latest>)
         let old = s.packages.remove(0);
         let _ = fs::remove_file(&old);
     }
+}
+
+/// `pacdeb install <name>`, like apt: a tracked app; else a built in preset; else the
+/// newest package of that name in the saved apt repositories, which is then tracked.
+/// As in apt, `name/repository` takes the package from that saved repository.
+pub fn install_name(spec: &str, direct: bool) -> Result<()> {
+    let paths = Paths::from_env()?;
+    let config = Config::load(&paths.config)?;
+    let (name, only) = match spec.split_once('/') {
+        Some((n, r)) => {
+            if !config.apt.contains_key(r) {
+                bail!("no apt repository named {r}; 'pacdeb apt list' shows the saved ones");
+            }
+            (n, Some(r))
+        }
+        None => (spec, None),
+    };
+    if config.apps.contains_key(name) {
+        if let (Some(r), Some((current, _))) = (only, config.apt_repo(&config.apps[name])) {
+            if current != r {
+                bail!("{name} is tracked from {current}; move it with 'pacdeb set {name} --apt {r}' first");
+            }
+        }
+        return install_app(name, direct);
+    }
+    if only.is_none() && crate::registry::presets().contains_key(name) {
+        crate::apps::add_with(name, &crate::apps::Flags::default(), false)?;
+        return install_app(name, direct);
+    }
+    let (mut all, failed) = crate::aptrepos::all_packages(&config, &paths);
+    if let Some(r) = only {
+        all.retain(|f| f.repo == r);
+    }
+    let st = Style::for_stdout();
+    for f in &failed {
+        println!("{} {f}", st.warn("warning:"));
+    }
+    let Some(found) = crate::aptrepos::find(&all, name) else {
+        let similar: Vec<String> = crate::aptrepos::search(&all, name).into_iter().take(5).map(|f| format!("{}/{}", f.package.name, f.repo)).collect();
+        let hint = if similar.is_empty() { String::new() } else { format!("\nSimilar: {}", similar.join(", ")) };
+        if config.apt.is_empty() {
+            bail!("{name} is not tracked, not built in, and no apt repositories are saved to look in; add one with 'pacdeb apt add'");
+        }
+        bail!("no package named {name} in the saved apt repositories ('pacdeb update' refreshes their lists){hint}");
+    };
+    let others: Vec<String> = all.iter().filter(|f| f.package.name == name && f.repo != found.repo).map(|f| format!("{} {}", f.repo, f.package.version)).collect();
+    let also = if others.is_empty() { String::new() } else { format!(" (also in {})", others.join(", ")) };
+    println!("Found {name} {} in {}{also}", found.package.version, found.repo);
+    let flags = crate::apps::Flags { apt: Some(found.repo.clone()), ..Default::default() };
+    crate::apps::add_with(name, &flags, false)?;
+    install_app(name, direct)
 }
 
 /// `pacdeb install <app>`: the newest version from the app's source, built and installed

@@ -32,6 +32,12 @@ impl Checksum {
         }
     }
 
+    pub fn hex(&self) -> &str {
+        match self {
+            Checksum::Sha256(h) | Checksum::Sha512(h) => h,
+        }
+    }
+
     pub fn matches(&self, data: &[u8]) -> bool {
         match self {
             Checksum::Sha256(want) => hex(&Sha256::digest(data)) == *want,

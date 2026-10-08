@@ -83,7 +83,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
                         let pre = if *prerelease { " · with prereleases" } else { "" };
                         github.append(&plain_row(repo, &format!("{asset} · used by {name}{pre}")));
                     }
-                    SourceConfig::Manual {} => manual.append(&plain_row(name, "updated with 'pacdeb update <app> --file <deb>' or the Convert page")),
+                    SourceConfig::Manual {} => manual.append(&plain_row(name, "upgraded with 'pacdeb upgrade <app> --file <deb>' or the Convert page")),
                     SourceConfig::Apt { .. } => {}
                 }
             }

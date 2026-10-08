@@ -75,7 +75,42 @@ pub fn fetch(name: &str, repo: &AptRepoConfig, key: &Path, cache_dir: &Path) -> 
         let raw = net::get_bytes(&format!("{base}/{}", file.path), &[])?;
         indexes.push((component, apt::read_index(&file, &raw)?));
     }
+    save_indexes(name, &indexes, cache_dir)?;
     Ok(Fetched { release, info, indexes })
+}
+
+fn indexes_dir(name: &str, cache_dir: &Path) -> PathBuf {
+    cache_dir.join("apt").join(name)
+}
+
+/// Keeps the verified indexes, replacing the previous ones, for searching and
+/// installing without the network.
+fn save_indexes(name: &str, indexes: &[(String, String)], cache_dir: &Path) -> Result<()> {
+    let dir = indexes_dir(name, cache_dir);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).context(dir.display())?;
+    for (component, text) in indexes {
+        let file = dir.join(format!("{}.Packages", if component.is_empty() { "flat" } else { component }));
+        fs::write(&file, text).context(file.display())?;
+    }
+    Ok(())
+}
+
+/// The indexes from the last successful fetch; empty when there was none.
+pub fn cached_indexes(name: &str, cache_dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = fs::read_dir(indexes_dir(name, cache_dir)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().into_owned();
+            let component = file.strip_suffix(".Packages")?.to_string();
+            Some((if component == "flat" { String::new() } else { component }, fs::read_to_string(e.path()).ok()?))
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 fn cached_release_path(name: &str, cache_dir: &Path) -> PathBuf {
@@ -92,6 +127,7 @@ pub fn last_checked(name: &str, cache_dir: &Path) -> Option<(i64, ReleaseInfo)> 
 /// Forgets the cached Release of a repository that was removed or renamed.
 pub fn forget(name: &str, cache_dir: &Path) {
     let _ = fs::remove_file(cached_release_path(name, cache_dir));
+    let _ = fs::remove_dir_all(indexes_dir(name, cache_dir));
 }
 
 #[cfg(test)]

@@ -41,7 +41,15 @@ pub fn run(args: &[String]) -> ExitCode {
         "inspect" => inspect(&args[1..]),
         "convert" => convert(&args[1..]),
         "install" => install(&args[1..]),
-        "update" => update(&args[1..]),
+        "update" => match &args[1..] {
+            [] => finish(crate::update::refresh(false).map(|_| ())),
+            _ => usage_error("update", "'pacdeb update' takes no arguments; it refreshes everything. To build and install, use 'pacdeb upgrade [app]'"),
+        },
+        "upgrade" => upgrade(&args[1..]),
+        "search" => match &args[1..] {
+            [] => usage_error("search", "usage: pacdeb search <words>"),
+            words => finish(crate::aptrepos::run_search(&words.join(" "))),
+        },
         "add" => registry_cmd("add", &args[1..], "usage: pacdeb add <name> [--preset <p> | --source <type>] [options]", |pos, f| match pos {
             [name] => crate::apps::add(name, f),
             _ => Err(crate::error::Error::new("usage: pacdeb add <name> [--preset <p> | --source <type>] [options]")),
@@ -53,7 +61,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }),
         "list" => match &args[1..] {
             [] => finish(crate::apps::list()),
-            _ => usage_error("list", "usage: pacdeb list"),
+            [a] if a == "--upgradable" => finish(crate::apps::list_upgradable()),
+            _ => usage_error("list", "usage: pacdeb list [--upgradable]"),
         },
         "remove" => match &args[1..] {
             [name] if !name.starts_with('-') => finish(crate::apps::remove(name)),
@@ -140,17 +149,17 @@ fn install(args: &[String]) -> ExitCode {
     let Some(target) = target else {
         return usage_error("install", INSTALL_USAGE);
     };
-    // A path to a file is a deb; anything else is a tracked app's name.
+    // A path to a file is a deb; anything else is a name to look up.
     if target.exists() || target.extension().is_some_and(|e| e == "deb") {
         finish(crate::update::install_file(&target, direct))
     } else {
-        finish(crate::update::install_app(&target.to_string_lossy(), direct))
+        finish(crate::update::install_name(&target.to_string_lossy(), direct))
     }
 }
 
-const UPDATE_USAGE: &str = "usage: pacdeb update [name] [--file <file.deb>] [--direct] [--no-install]";
+const UPGRADE_USAGE: &str = "usage: pacdeb upgrade [app] [--file <file.deb>] [--direct] [--no-install]";
 
-fn update(args: &[String]) -> ExitCode {
+fn upgrade(args: &[String]) -> ExitCode {
     let mut opts = crate::update::Options { name: None, file: None, direct: false, no_install: false, notify: false };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -159,14 +168,14 @@ fn update(args: &[String]) -> ExitCode {
             "--no-install" => opts.no_install = true,
             "--file" => match it.next() {
                 Some(f) => opts.file = Some(PathBuf::from(f)),
-                None => return usage_error("update", &format!("--file needs a .deb. {UPDATE_USAGE}")),
+                None => return usage_error("upgrade", &format!("--file needs a .deb. {UPGRADE_USAGE}")),
             },
-            s if s.starts_with('-') => return usage_error("update", &format!("unknown option '{s}'. {UPDATE_USAGE}")),
+            s if s.starts_with('-') => return usage_error("upgrade", &format!("unknown option '{s}'. {UPGRADE_USAGE}")),
             s if opts.name.is_none() => opts.name = Some(s.to_string()),
-            s => return usage_error("update", &format!("unexpected argument '{s}'. {UPDATE_USAGE}")),
+            s => return usage_error("upgrade", &format!("unexpected argument '{s}'. {UPGRADE_USAGE}")),
         }
     }
-    finish(crate::update::update(&opts))
+    finish(crate::update::upgrade(&opts))
 }
 
 /// Parses add/set style arguments and runs the command with them.
