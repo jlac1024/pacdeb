@@ -6,6 +6,7 @@ mod apps_page;
 mod browse_dialog;
 mod convert_page;
 mod install;
+mod repo_dialog;
 mod run;
 mod settings_page;
 mod source_dialog;
@@ -122,7 +123,7 @@ fn build_window(app: &adw::Application, page: Option<&str>, deb: Option<std::pat
 }
 
 /// Debug builds only: PACDEB_GUI_OPEN=add | edit:<app> | install:<package file> |
-/// browse:<app> opens
+/// browse:<app or repository> | repo:<repository> opens
 /// that dialog at startup, for checking it with PACDEB_GUI_SNAPSHOT.
 #[cfg(debug_assertions)]
 fn open_for_tests(ctx: &Rc<Ctx>) {
@@ -133,15 +134,15 @@ fn open_for_tests(ctx: &Rc<Ctx>) {
         None if what == "add" => source_dialog::open(ctx, None),
         Some(("edit", app)) => source_dialog::open(ctx, Some(app)),
         Some(("install", pkg)) => install::confirm(ctx, vec![std::path::PathBuf::from(pkg)]),
-        Some(("browse", app)) => {
+        Some(("browse", name)) => {
             let paths = pacdeb::paths::Paths::from_env().expect("paths");
             let config = pacdeb::registry::Config::load(&paths.config).expect("config");
-            let used = pacdeb::browse::used_repos(&config, &paths).into_iter().find(|u| u.apps.iter().any(|a| a == app));
-            match used.and_then(|u| Some((u.repo, u.key?, u.packages))) {
-                Some((repo, key, tracked)) => browse_dialog::open(ctx, browse_dialog::Target { repo, key, fingerprint: None, tracked }),
-                None => eprintln!("PACDEB_GUI_OPEN: {app} has no apt repository with a key"),
+            match pacdeb::browse::repository_of(&config, name) {
+                Ok(repo) => browse_dialog::open(ctx, &repo),
+                Err(e) => eprintln!("PACDEB_GUI_OPEN: {e}"),
             }
         }
+        Some(("repo", name)) => repo_dialog::open(ctx, name),
         _ => eprintln!("PACDEB_GUI_OPEN: unknown value {what}"),
     }
 }

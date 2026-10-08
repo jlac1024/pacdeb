@@ -90,12 +90,19 @@ Each tracked app has one source:
   pacdeb add some-app --source direct --feed https://example.com/latest.json \
       --version-json version --url 'https://example.com/some-app_{version}_amd64.deb'
   ```
-- **apt**: a Debian repository. The repository's signature is checked with `gpgv`
-  against its signing key, and every download against the index's checksum.
+- **apt**: a package from a saved apt repository. Save the repository once, from the
+  line in the vendor's install instructions, then track any of its packages:
   ```
-  pacdeb add some-app --source apt --repo https://example.com/apt --suite stable \
-      --component main --key-url https://example.com/key.asc --key-fingerprint <fpr>
+  pacdeb apt add --line 'deb [arch=amd64] https://example.com/apt stable main' \
+      --key-url https://example.com/key.asc --key-fingerprint <fpr>
+  pacdeb apt packages example
+  pacdeb add some-app --apt example
   ```
+  The repository's signature is checked with `gpgv` against its key, every download
+  against the index's checksum, and a Release file past its Valid-Until date is
+  refused, as apt does. `pacdeb apt show <name>` reports its health (when it was
+  updated, when the key expires, missing components); `apt edit`, `apt key` and
+  `apt remove` change it for every app that uses it. See `pacdeb help apt`.
 - **github**: release assets on GitHub.
   ```
   pacdeb add some-app --source github --repo owner/name --asset '*_amd64.deb'

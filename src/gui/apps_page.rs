@@ -85,7 +85,7 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox, found: &Found) {
     let (config, state) = match loaded {
         Ok(cs) => cs,
         Err(e) => {
-            list.append(&adw::ActionRow::builder().title("Cannot read pacdeb's settings").subtitle(e.to_string()).build());
+            list.append(&crate::sources_page::plain_row("Cannot read pacdeb's settings", &e.to_string()));
             return;
         }
     };

@@ -11,7 +11,7 @@ use pacdeb::registry::{App, Config, SourceConfig, presets};
 
 use crate::{Ctx, run};
 
-const KINDS: &[(&str, &str)] = &[("preset", "Built in app"), ("direct", "Direct download"), ("apt", "apt repository"), ("github", "GitHub releases"), ("manual", "Manual (.deb files you add)")];
+const KINDS: &[(&str, &str)] = &[("preset", "Built in app"), ("direct", "Direct download"), ("apt", "Saved apt repository"), ("github", "GitHub releases"), ("manual", "Manual (.deb files you add)")];
 
 struct Form {
     name: adw::EntryRow,
@@ -22,6 +22,10 @@ struct Form {
     /// Text fields: flag, row, and which source kind they belong to ("" for any).
     fields: Vec<(&'static str, &'static str, adw::EntryRow)>,
     prerelease: adw::SwitchRow,
+    /// The saved apt repositories, for apt sources.
+    apt_repo: adw::ComboRow,
+    apt_names: Vec<String>,
+    before_apt: Option<String>,
     groups: Vec<(&'static str, adw::PreferencesGroup)>,
     /// What the fields held when the dialog opened, for an edit.
     before: BTreeMap<&'static str, String>,
@@ -46,8 +50,8 @@ impl Form {
         }
     }
 
-    fn value(&self, flag: &str) -> String {
-        self.fields.iter().find(|(f, _, _)| *f == flag).map(|(_, _, r)| r.text().trim().to_string()).unwrap_or_default()
+    fn selected_apt(&self) -> Option<String> {
+        self.apt_names.get(self.apt_repo.selected() as usize).cloned()
     }
 
     /// The command line arguments that save the form.
@@ -82,6 +86,10 @@ impl Form {
                 if kind == "github" && self.prerelease.is_active() {
                     args.push("--prerelease".into());
                 }
+                if kind == "apt" {
+                    let repo = self.selected_apt().ok_or("Add an apt repository on the Sources page first")?;
+                    push(&mut args, "--apt", repo);
+                }
             }
             Some(name) => {
                 args.extend(["set".into(), name.to_string()]);
@@ -103,6 +111,12 @@ impl Form {
                         push(&mut args, flag, v);
                     }
                 }
+                if kind == "apt" {
+                    let repo = self.selected_apt().ok_or("Add an apt repository on the Sources page first")?;
+                    if replacing || self.before_apt.as_deref() != Some(repo.as_str()) {
+                        push(&mut args, "--apt", repo);
+                    }
+                }
                 if kind == "github" && (replacing || self.prerelease.is_active() != self.before_prerelease) {
                     args.push(if self.prerelease.is_active() { "--prerelease" } else { "--no-prerelease" }.into());
                 }
@@ -110,9 +124,6 @@ impl Form {
                     return Err("Nothing changed".into());
                 }
             }
-        }
-        if kind == "apt" && editing.is_none() && self.value("--key-url").is_empty() {
-            return Err("An apt repository needs its signing key URL".into());
         }
         Ok(args)
     }
@@ -167,26 +178,18 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
         ],
         &mut fields,
     );
-    group(
-        "apt",
-        "apt repository",
-        &[
-            ("--repo", "Repository URL"),
-            ("--suite", "Suite, e.g. stable"),
-            ("--component", "Component (default main)"),
-            ("--package", "Package (default: the app name)"),
-            ("--arch", "Architecture (default: this machine)"),
-            ("--key-url", "Signing key URL"),
-            ("--key-fingerprint", "Signing key fingerprint (recommended)"),
-        ],
-        &mut fields,
-    );
+    let apt_names: Vec<String> = editing.map(|(_, _, c)| c.apt.keys().cloned().collect()).unwrap_or_else(saved_repositories);
+    let apt_labels: Vec<&str> = apt_names.iter().map(String::as_str).collect();
+    let apt_repo = adw::ComboRow::builder().title("Repository").model(&gtk::StringList::new(&apt_labels)).build();
+    let apt_group = group("apt", "Saved apt repository", &[("--package", "Package (default: the app name)")], &mut fields);
+    apt_group.set_description(Some(if apt_names.is_empty() { "No apt repositories saved yet; add one on the Sources page." } else { "Repositories are added and managed on the Sources page." }));
+    apt_group.add(&apt_repo);
     let gh = group("github", "GitHub releases", &[("--repo", "Repository, owner/name"), ("--asset", "Asset pattern, e.g. *_amd64.deb")], &mut fields);
     let prerelease = adw::SwitchRow::builder().title("Include prereleases").build();
     gh.add(&prerelease);
     page.add(&options);
 
-    let mut form = Form { name, kind, kinds, preset, presets, fields, prerelease, groups, before: BTreeMap::new(), before_kind: None, before_prerelease: false };
+    let mut form = Form { name, kind, kinds, preset, presets, fields, prerelease, apt_repo, apt_names, before_apt: None, groups, before: BTreeMap::new(), before_kind: None, before_prerelease: false };
     if let Some((app_name, app, config)) = editing {
         form.name.set_text(app_name);
         form.name.set_editable(false);
@@ -201,12 +204,12 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
                     before.insert(f, opt(v));
                 }
             }
-            SourceConfig::Apt { repo, suite, component, package, arch, .. } => {
-                before.insert("--repo", repo.clone());
-                before.insert("--suite", suite.clone());
-                before.insert("--component", component.clone());
+            SourceConfig::Apt { repository, package } => {
                 before.insert("--package", opt(package));
-                before.insert("--arch", opt(arch));
+                if let Some(i) = form.apt_names.iter().position(|n| n == repository) {
+                    form.apt_repo.set_selected(i as u32);
+                }
+                form.before_apt = Some(repository.clone());
             }
             SourceConfig::Github { repo, asset, prerelease } => {
                 before.insert("--repo", repo.clone());
@@ -232,6 +235,10 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
         }
     }
     (form, page)
+}
+
+fn saved_repositories() -> Vec<String> {
+    Paths::from_env().and_then(|p| Config::load(&p.config)).map(|c| c.apt.keys().cloned().collect()).unwrap_or_default()
 }
 
 /// Opens the dialog for a new app (`None`) or for editing a tracked one.

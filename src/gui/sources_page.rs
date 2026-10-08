@@ -1,21 +1,21 @@
-//! The Sources page: where the tracked apps come from. apt repositories can be browsed
-//! for everything they offer, and new ones added and browsed before tracking anything.
+//! The Sources page: where the tracked apps come from. Saved apt repositories are listed
+//! with their health and can be browsed, managed, and added from a vendor's apt line.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
-use pacdeb::browse::{self, AptRepo};
+use pacdeb::aptrepos;
 use pacdeb::paths::Paths;
 use pacdeb::registry::{Config, SourceConfig};
-use pacdeb::sources::apt::host_arch;
+use pacdeb::sources::release;
 
-use crate::browse_dialog::{self, Target};
-use crate::Ctx;
+use crate::{Ctx, browse_dialog, repo_dialog, run};
 
 /// A row for text from outside pacdeb (URLs, descriptions), which must not be read as markup.
 pub fn plain_row(title: &str, subtitle: &str) -> adw::ActionRow {
-    adw::ActionRow::builder().title(title).subtitle(subtitle).use_markup(false).build()
+    // Rows read their text as markup; escaping keeps <, > and & as typed.
+    let esc = |s: &str| gtk::glib::markup_escape_text(s).to_string();
+    adw::ActionRow::builder().title(esc(title)).subtitle(esc(subtitle)).build()
 }
 
 fn group(page: &adw::PreferencesPage, title: &str, description: &str) -> (adw::PreferencesGroup, gtk::ListBox) {
@@ -28,7 +28,7 @@ fn group(page: &adw::PreferencesPage, title: &str, description: &str) -> (adw::P
 
 pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     let page = adw::PreferencesPage::new();
-    let (apt_group, apt) = group(&page, "apt repositories", "Debian package repositories your apps come from. Browse one to see every package it offers.");
+    let (apt_group, apt) = group(&page, "apt repositories", "Saved Debian package repositories. Apps take packages from them; browse one to see everything it offers.");
     let add = gtk::Button::builder().icon_name("list-add-symbolic").tooltip_text("Add an apt repository").css_classes(["flat"]).build();
     apt_group.set_header_suffix(Some(&add));
     let (_, feeds) = group(&page, "Download links and feeds", "Apps downloaded from a fixed link, or from a link a version feed names");
@@ -45,22 +45,32 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
                 return;
             };
             let config = Config::load(&paths.config).unwrap_or_default();
-            for used in browse::used_repos(&config, &paths) {
-                let r = &used.repo;
-                let subtitle = format!("{} · {} · {} · used by {}", r.suite, r.component, r.arch, used.apps.join(", "));
-                let row = plain_row(&r.repo, &subtitle);
-                let browse = gtk::Button::builder().label("Browse").valign(gtk::Align::Center).build();
-                match used.key.clone() {
-                    Some(key) => {
-                        let (ctx, repo, tracked) = (ctx.clone(), r.clone(), used.packages.clone());
-                        browse.connect_clicked(move |_| browse_dialog::open(&ctx, Target { repo: repo.clone(), key: key.clone(), fingerprint: None, tracked: tracked.clone() }));
-                    }
-                    None => {
-                        browse.set_sensitive(false);
-                        browse.set_tooltip_text(Some("No signing key; set one on the app first"));
-                    }
+            let now = release::now();
+            for (name, repo) in &config.apt {
+                let health = aptrepos::health(name, repo, &paths, false);
+                let apps = config.apps_using(name);
+                let comps = if repo.is_flat() { "flat".to_string() } else { repo.components.join(" ") };
+                let used = if apps.is_empty() { "no apps yet".to_string() } else { format!("used by {}", apps.join(", ")) };
+                let checked = health.checked.map(|t| format!("checked {}", release::relative(t, now))).unwrap_or_else(|| "not checked yet".into());
+                let row = plain_row(name, &format!("{} · {} · {comps}\n{used} · {checked}", repo.url, repo.suite));
+                row.set_subtitle_lines(3);
+                let serious = health.warnings.iter().any(|w| w != "never checked yet");
+                if serious {
+                    let icon = gtk::Image::builder().icon_name("dialog-warning-symbolic").css_classes(["warning"]).tooltip_text(health.warnings.join("\n")).build();
+                    row.add_prefix(&icon);
                 }
+                let browse = gtk::Button::builder().label("Browse").valign(gtk::Align::Center).build();
+                browse.connect_clicked({
+                    let (ctx, name) = (ctx.clone(), name.clone());
+                    move |_| browse_dialog::open(&ctx, &name)
+                });
+                let manage = gtk::Button::builder().icon_name("emblem-system-symbolic").tooltip_text("Details and settings").valign(gtk::Align::Center).css_classes(["flat"]).build();
+                manage.connect_clicked({
+                    let (ctx, name) = (ctx.clone(), name.clone());
+                    move |_| repo_dialog::open(&ctx, &name)
+                });
                 row.add_suffix(&browse);
+                row.add_suffix(&manage);
                 apt.append(&row);
             }
             for (name, app) in &config.apps {
@@ -93,72 +103,87 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     page.upcast()
 }
 
-/// Asks for a repository and its key, checks them, then opens the package browser.
+/// Saves a repository from a vendor's apt line (or .sources text) and key link.
 fn add_repository(ctx: &Rc<Ctx>) {
     let page = adw::PreferencesPage::new();
-    let g = adw::PreferencesGroup::builder()
-        .description("pacdeb checks the repository's signature before showing its packages. The vendor's install instructions name these values (the 'deb' line and the key link).")
+    let what = adw::PreferencesGroup::builder()
+        .title("Repository")
+        .description("Paste the line from the vendor's install instructions, like:\ndeb [arch=amd64] https://example.com/apt stable main\nA whole .sources file works too.")
         .build();
-    let entry = |title: &str, text: &str| {
-        let r = adw::EntryRow::builder().title(title).text(text).build();
-        g.add(&r);
+    let buffer = gtk::TextBuffer::new(None);
+    let text = gtk::TextView::builder()
+        .buffer(&buffer)
+        .monospace(true)
+        .wrap_mode(gtk::WrapMode::Char)
+        .top_margin(8)
+        .bottom_margin(8)
+        .left_margin(8)
+        .right_margin(8)
+        .css_classes(["card"])
+        .height_request(90)
+        .build();
+    what.add(&text);
+    page.add(&what);
+    let details = adw::PreferencesGroup::builder().title("Signing key").description("pacdeb checks the repository's signature before saving it. A .sources file that includes the key needs no link.").build();
+    let entry = |title: &str| {
+        let r = adw::EntryRow::builder().title(title).build();
+        details.add(&r);
         r
     };
-    let repo = entry("Repository URL", "");
-    let suite = entry("Suite", "stable");
-    let component = entry("Component", "main");
-    let key_url = entry("Signing key URL", "");
-    let fpr = entry("Key fingerprint (recommended)", "");
-    page.add(&g);
+    let key_url = entry("Key link (the .asc or .gpg file)");
+    let fpr = entry("Key fingerprint (recommended, from the vendor)");
+    let name = entry("Name (optional, made from the URL)");
+    page.add(&details);
 
     let cancel = gtk::Button::with_label("Cancel");
-    let next = gtk::Button::builder().label("Browse packages").css_classes(["suggested-action"]).build();
+    let save = gtk::Button::builder().label("Add").css_classes(["suggested-action"]).build();
     let header = adw::HeaderBar::builder().show_start_title_buttons(false).show_end_title_buttons(false).build();
     header.pack_start(&cancel);
-    header.pack_end(&next);
+    header.pack_end(&save);
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
     view.set_content(Some(&page));
-    let dialog = adw::Dialog::builder().title("Add an apt repository").content_width(560).child(&view).build();
+    let dialog = adw::Dialog::builder().title("Add an apt repository").content_width(620).content_height(620).child(&view).build();
     cancel.connect_clicked({
         let dialog = dialog.clone();
         move |_| {
             dialog.close();
         }
     });
-    next.connect_clicked({
+    save.connect_clicked({
         let (ctx, dialog) = (ctx.clone(), dialog.clone());
-        move |button| {
-            let text = |r: &adw::EntryRow| r.text().trim().to_string();
-            let (r, s, c, k, f) = (text(&repo), text(&suite), text(&component), text(&key_url), text(&fpr));
-            if r.is_empty() || s.is_empty() || c.is_empty() || k.is_empty() {
-                ctx.toast("The repository URL, suite, component and key URL are all needed");
+        move |_| {
+            let line = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).trim().to_string();
+            if line.is_empty() {
+                ctx.toast("Paste the repository's apt line first");
                 return;
             }
-            button.set_sensitive(false);
-            let (ctx, dialog, button) = (ctx.clone(), dialog.clone(), button.clone());
-            glib::spawn_future_local(async move {
-                let fetched = gio::spawn_blocking({
-                    let (k, f) = (k.clone(), f.clone());
-                    move || {
-                        let paths = Paths::from_env().map_err(|e| e.to_string())?;
-                        browse::fetch_key(&k, Some(&f), &paths).map_err(|e| e.to_string())
-                    }
-                })
-                .await;
-                button.set_sensitive(true);
-                match fetched {
-                    Ok(Ok((key, fprs))) => {
-                        dialog.close();
-                        let pinned = (!f.is_empty()).then(|| fprs.join(" "));
-                        let repo = AptRepo { repo: r.trim_end_matches('/').to_string(), suite: s, component: c, arch: host_arch().to_string() };
-                        if pinned.is_none() {
-                            ctx.toast(&format!("Key fingerprint {}; compare it with the one the vendor publishes", fprs.join(", ")));
+            let mut args = vec!["apt".to_string(), "add".to_string()];
+            let n = name.text().trim().to_string();
+            if !n.is_empty() {
+                args.push(n);
+            }
+            args.extend(["--line".to_string(), line]);
+            for (flag, row) in [("--key-url", &key_url), ("--key-fingerprint", &fpr)] {
+                let v = row.text().trim().to_string();
+                if !v.is_empty() {
+                    args.extend([flag.to_string(), v]);
+                }
+            }
+            let (ctx2, form) = (ctx.clone(), dialog.clone());
+            run::logged(&ctx, "Adding the repository", &run::cli(), &args, false, move |log, done| {
+                ctx2.refresh();
+                if done.ok {
+                    log.close();
+                    form.close();
+                    let saved = done.output.lines().find_map(|l| l.strip_prefix("Saved apt repository ").and_then(|r| r.split('.').next()).map(String::from));
+                    match saved {
+                        Some(r) => {
+                            ctx2.toast(&format!("Saved {r}; pick the packages to track"));
+                            browse_dialog::open(&ctx2, &r);
                         }
-                        browse_dialog::open(&ctx, Target { repo, key, fingerprint: pinned, tracked: Vec::new() });
+                        None => ctx2.toast(done.output.lines().find(|l| !l.trim().is_empty()).unwrap_or("Done")),
                     }
-                    Ok(Err(e)) => ctx.toast(&e),
-                    Err(_) => ctx.toast("Fetching the key stopped unexpectedly"),
                 }
             });
         }
