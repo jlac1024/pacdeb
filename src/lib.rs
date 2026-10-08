@@ -6,6 +6,7 @@ pub mod aptrepos;
 pub mod browse;
 pub mod build;
 pub mod clash;
+pub mod completions;
 pub mod cli;
 pub mod control;
 pub mod convert;

@@ -83,6 +83,11 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         "apt" => finish(crate::aptrepos::run(&args[1..])),
+        "completions" => match &args[1..] {
+            [shell] => finish(crate::completions::script(shell)),
+            _ => usage_error("", "usage: pacdeb completions <fish|bash|zsh>"),
+        },
+        "__complete" => finish(crate::completions::complete(args.get(1).map(String::as_str).unwrap_or(""))),
         "packages" => match &args[1..] {
             [app] if !app.starts_with('-') => finish(crate::browse::run(app)),
             _ => usage_error("packages", "usage: pacdeb packages <app>"),

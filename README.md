@@ -16,7 +16,10 @@ build/build.sh
 ```
 
 This puts the command line tool at `deploy/pacdeb` and the app at `deploy/pacdeb-gui`
-(which needs GTK 4 and libadwaita, both part of a normal CachyOS desktop). Run it with `./run.sh`, or copy it somewhere on
+(which needs GTK 4 and libadwaita, both part of a normal CachyOS desktop).
+`./setup.sh` links both into `~/.local/bin` and installs tab completion for fish, bash
+and zsh, which completes commands, app and repository names, and every package in the
+saved apt repositories (`pacdeb completions <shell>` prints the script). Run it with `./run.sh`, or copy it somewhere on
 your `PATH`, for example `~/.local/bin`.
 
 At runtime pacdeb uses `makepkg` to build packages (it writes them itself with
