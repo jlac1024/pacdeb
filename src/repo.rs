@@ -160,6 +160,10 @@ fn publish_existing(config: &Config, paths: &Paths, repo: &RepoSettings) {
         if !pkg.file_name().and_then(|n| n.to_str()).is_some_and(|n| is_package_of(n, pkgname)) {
             continue;
         }
+        let in_repo = pkg.file_name().map(|n| Path::new(&repo.dir).join(n));
+        if in_repo.is_some_and(|p| p.exists() && sig_path(&p).exists()) {
+            continue;
+        }
         match publish(&pkg, paths, repo) {
             Ok(()) => println!("Published {}", pkg.file_name().unwrap_or_default().to_string_lossy()),
             Err(e) => println!("warning: could not publish {}: {e}", pkg.display()),
