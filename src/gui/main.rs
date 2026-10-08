@@ -82,6 +82,11 @@ fn main() -> ExitCode {
         }
     }
     let app = adw::Application::builder().application_id(APP_ID).build();
+    // Off-screen test runs must not hand over to a pacdeb window already open on the desktop.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("PACDEB_GUI_SNAPSHOT").is_some() {
+        app.set_flags(gtk::gio::ApplicationFlags::NON_UNIQUE);
+    }
     app.connect_activate(move |app| build_window(app, page.as_deref(), deb.clone(), search.clone()));
     let code = app.run_with_args(&args[..1]);
     code.into()
@@ -152,7 +157,6 @@ fn show_about(window: &adw::ApplicationWindow) {
         .application_icon("system-software-install")
         .version(env!("CARGO_PKG_VERSION"))
         .comments(format!("Turns Debian .deb packages into pacman packages and keeps them updated, like apt.\n\nBuild {}", pacdeb::build()))
-        .developer_name("Jeff LaCombe")
         .copyright("© 2026 Jeff LaCombe (jlac1024)")
         .license_type(gtk::License::Agpl30)
         .build();
