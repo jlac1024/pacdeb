@@ -174,6 +174,7 @@ pub fn translate<R: Read + Seek>(
     let deps = deps::translate(control, &deb_arch, depmap, |names| system.installed(names), |names| system.in_repos(names))?;
     let control_files = deb.control_files.clone();
     let python = system.python_version();
+    let mentioned = mentioned_paths(&control_files);
 
     let mut entries = Vec::new();
     let mut contents = HashMap::new();
@@ -183,12 +184,19 @@ pub fn translate<R: Read + Seek>(
         if e.kind != EntryKind::File {
             return Ok(());
         }
-        let wanted_text =
-            e.path.ends_with(".desktop") || e.path.starts_with("/etc/cron") || e.path.starts_with("/etc/pam.d/");
+        let wanted_text = e.path.ends_with(".desktop")
+            || e.path.starts_with("/etc/cron")
+            || e.path.starts_with("/etc/pam.d/")
+            || mentioned.contains(&e.path);
         if wanted_text && e.size <= TEXT_LIMIT {
             let mut buf = Vec::new();
             r.read_to_end(&mut buf)?;
-            contents.insert(e.path.clone(), buf);
+            // A script may name a binary too; its libraries still count.
+            if buf.starts_with(elf::MAGIC) {
+                needed.extend(elf::needed(&buf).unwrap_or_default());
+            } else {
+                contents.insert(e.path.clone(), buf);
+            }
         } else if e.size >= 64 {
             let mut magic = [0u8; 4];
             r.read_exact(&mut magic)?;
@@ -209,13 +217,19 @@ pub fn translate<R: Read + Seek>(
     let mut script_cmds = Vec::new();
     {
         let exists = package_facts(&nodes, &map, &name);
+        let glob = |pattern: &str| -> Vec<String> {
+            let pattern = map.apply(pattern);
+            let mut found: Vec<String> = nodes.iter().filter(|n| scripts::glob_path(&pattern, &n.path)).map(|n| n.path.clone()).collect();
+            found.sort();
+            found
+        };
         for script in MAINTAINER_SCRIPTS {
             if let Some(body) = control_files.get(script) {
-                script_cmds.extend(scripts::analyze(script, &String::from_utf8_lossy(body), &exists));
+                script_cmds.extend(scripts::analyze(script, &String::from_utf8_lossy(body), &exists, &glob));
             }
         }
     }
-    apply_actions(&mut nodes, &map, &script_cmds, &name, &mut changes, &mut warnings);
+    apply_actions(&mut nodes, &map, &script_cmds, &name, &contents, &mut changes, &mut warnings);
     rewrite_pam(&mut nodes, &contents, &mut changes, &mut warnings);
     let services::Note { lines: install_note, warnings: service_warnings } = services::note(&script_cmds, &nodes);
     warnings.extend(service_warnings);
@@ -262,6 +276,15 @@ pub fn translate<R: Read + Seek>(
     }
 
     let mut all = Vec::new();
+    for script in MAINTAINER_SCRIPTS {
+        let n = script_cmds.iter().filter(|c| c.script == script && c.outcome == Outcome::AptRepo).count();
+        if n > 0 {
+            all.push(Warning::Other(format!(
+                "{script}: {} set up the vendor's apt repository (sources list, signing keys, repository settings); left out, Arch does not use apt and pacdeb follows the vendor's updates itself",
+                if n == 1 { "1 line".to_string() } else { format!("{n} lines") }
+            )));
+        }
+    }
     for c in &script_cmds {
         let (script, line, text) = (c.script.clone(), c.line, c.text.clone());
         match &c.outcome {
@@ -389,11 +412,13 @@ fn apply_actions(
     map: &fs::PathMap,
     cmds: &[ScriptCommand],
     pkgname: &str,
+    contents: &HashMap<String, Vec<u8>>,
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
     let mut removals = Vec::new();
     let mut sysusers = Sysusers::default();
+    let mut owners: Vec<(String, String, Option<String>, Option<String>)> = Vec::new();
     for c in cmds {
         let Outcome::Actions(actions) = &c.outcome else {
             continue;
@@ -464,8 +489,80 @@ fn apply_actions(
                 Action::SystemUser { name, home, comment } => sysusers.user(name, home.as_deref(), comment.as_deref()),
                 Action::SystemGroup { name } => sysusers.group(name),
                 Action::GroupMember { user, group } => sysusers.member(user, group),
+                Action::ModeChange { path, spec } => {
+                    let path = map.apply(path);
+                    match nodes.iter_mut().find(|n| n.path == path && matches!(n.kind, NodeKind::File | NodeKind::Dir)) {
+                        Some(n) => match scripts::symbolic_mode(n.mode, spec) {
+                            Some(mode) if mode != n.mode => {
+                                changes.push(format!("{path}: mode {:04o} -> {mode:04o}, chmod {spec} ({at})", n.mode));
+                                n.mode = mode;
+                            }
+                            Some(_) => {}
+                            None => warnings.push(format!("{at}: could not apply chmod {spec} to {path}")),
+                        },
+                        None => warnings.push(format!("{at}: chmod on {path}, which is not in the package")),
+                    }
+                }
+                Action::Owner { path, user, group } => {
+                    let path = map.apply(path);
+                    if nodes.iter().any(|n| n.path == path) {
+                        owners.retain(|o| o.0 != path);
+                        owners.push((path, at.clone(), user.clone(), group.clone()));
+                    } else {
+                        warnings.push(format!("{at}: sets the owner of {path}, which is not in the package; check by hand"));
+                    }
+                }
+                Action::Edit { path, sed } => {
+                    let path = map.apply(path);
+                    let Some(n) = nodes.iter_mut().find(|n| n.path == path && n.kind == NodeKind::File) else {
+                        warnings.push(format!("{at}: edits {path}, which is not a file in the package"));
+                        continue;
+                    };
+                    let text = match &n.source {
+                        Source::Inline(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+                        Source::Deb(deb_path) => contents.get(deb_path).map(|b| String::from_utf8_lossy(b).into_owned()),
+                        Source::None => None,
+                    };
+                    let Some(text) = text else {
+                        warnings.push(format!("{at}: edits {path}, whose content pacdeb did not read; check by hand"));
+                        continue;
+                    };
+                    let edited = sed.apply(&text);
+                    if edited != text {
+                        changes.push(format!("{path}: edited as the script does ({at})"));
+                        n.size = edited.len() as u64;
+                        n.source = Source::Inline(edited.into_bytes());
+                    }
+                }
+                Action::Touch { path } => {
+                    let path = map.apply(path);
+                    if nodes.iter().any(|n| n.path == path) {
+                        continue;
+                    }
+                    // The package's folders are only listed later, so look for anything inside.
+                    let dir = format!("{}/", pathutil::parent(&path));
+                    if nodes.iter().any(|n| n.path.starts_with(&dir)) {
+                        changes.push(format!("added empty file {path} ({at})"));
+                        nodes.push(Node { path, kind: NodeKind::File, mode: 0o644, size: 0, source: Source::Inline(Vec::new()) });
+                    } else {
+                        warnings.push(format!("{at}: creates {path} outside the package's folders; check by hand"));
+                    }
+                }
             }
         }
+    }
+    if !owners.is_empty() {
+        // Packages hold root owned files; systemd-tmpfiles sets these owners (and the
+        // mode, which a change of owner can clear) once the package is installed.
+        let mut text = String::from("# Generated by pacdeb: owners the deb's maintainer scripts set.\n");
+        for (path, at, user, group) in &owners {
+            let mode = nodes.iter().find(|n| n.path == *path).map_or(0o644, |n| n.mode);
+            let (u, g) = (user.as_deref().unwrap_or("root"), group.as_deref().unwrap_or("root"));
+            text.push_str(&format!("z {path} {mode:04o} {u} {g} -\n"));
+            changes.push(format!("{path}: owner {u}:{g} set by systemd-tmpfiles after install ({at})"));
+        }
+        let path = format!("/usr/lib/tmpfiles.d/{pkgname}.conf");
+        nodes.push(Node { path, kind: NodeKind::File, mode: 0o644, size: text.len() as u64, source: Source::Inline(text.into_bytes()) });
     }
     if let Some(text) = sysusers.render() {
         let path = format!("/usr/lib/sysusers.d/{pkgname}.conf");
@@ -480,6 +577,23 @@ fn apply_actions(
             warnings.push(format!("{at}: removes {path}, which is not in the package; check by hand"));
         }
     }
+}
+
+/// Absolute paths the maintainer scripts name, to read those files during the scan.
+fn mentioned_paths(control_files: &std::collections::BTreeMap<String, Vec<u8>>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for script in MAINTAINER_SCRIPTS {
+        let Some(body) = control_files.get(script) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(body);
+        for word in text.split(|c: char| c.is_whitespace() || "\"';|&<>()`=".contains(c)) {
+            if word.starts_with('/') && word.len() > 1 && !word.contains('$') {
+                out.insert(pathutil::resolve("/", word));
+            }
+        }
+    }
+    out
 }
 
 /// Users, groups and memberships for a sysusers.d file. systemd's pacman hook creates
@@ -613,6 +727,48 @@ weird-tool --setup
         .entry(TestEntry::file("./usr/share/icons/hicolor/256x256/apps/demo.png", 0o644, b"png"))
         .build();
         Deb::from_reader(Cursor::new(bytes)).unwrap()
+    }
+
+    #[test]
+    fn applies_owners_edits_and_touches() {
+        let postinst = "#!/bin/sh\n\
+            groupadd vendor\n\
+            chgrp vendor /opt/Vendor/helper\n\
+            chmod g+s /opt/Vendor/helper\n\
+            cp /opt/Vendor/files/vendor.service /usr/lib/systemd/system/vendor.service\n\
+            sed -i 's|pkill|/usr/bin/pkill|g' /usr/lib/systemd/system/vendor.service\n\
+            touch /opt/Vendor/.installed\n\
+            echo 'deb https://example.com stable main' > /etc/apt/sources.list.d/vendor.list\n\
+            apt-key add /opt/Vendor/key.gpg\n";
+        let bytes = DebBuilder::new("Package: vendor\nVersion: 1.0\nArchitecture: amd64\nDescription: Vendor app\n")
+            .control_file("postinst", postinst)
+            .entry(TestEntry::file("./opt/Vendor/vendor", 0o755, b"app"))
+            .entry(TestEntry::file("./opt/Vendor/helper", 0o755, b"helper"))
+            .entry(TestEntry::file("./opt/Vendor/files/vendor.service", 0o644, b"[Service]\nExecStop=pkill -f vendor\n"))
+            .entry(TestEntry::file("./usr/share/vendor/vendor.desktop", 0o644, b"[Desktop Entry]\nType=Application\nName=Vendor\nExec=/opt/Vendor/vendor\n"))
+            .build();
+        let mut deb = Deb::from_reader(Cursor::new(bytes)).unwrap();
+        let t = translate(&mut deb, &Tables::builtin(), 1, &BareSystem).unwrap();
+        let node = |path: &str| t.package.nodes.iter().find(|n| n.path == path).unwrap_or_else(|| panic!("{path} missing"));
+        let inline = |path: &str| match &node(path).source {
+            Source::Inline(b) => String::from_utf8(b.clone()).unwrap(),
+            other => panic!("{path}: {other:?}"),
+        };
+
+        assert_eq!(node("/opt/Vendor/helper").mode, 0o2755);
+        assert_eq!(
+            inline("/usr/lib/tmpfiles.d/vendor.conf"),
+            "# Generated by pacdeb: owners the deb's maintainer scripts set.\nz /opt/Vendor/helper 2755 root vendor -\n"
+        );
+        assert!(inline("/usr/lib/sysusers.d/vendor.conf").contains("g vendor -"));
+        assert_eq!(inline("/usr/lib/systemd/system/vendor.service"), "[Service]\nExecStop=/usr/bin/pkill -f vendor\n");
+        assert!(matches!(node("/opt/Vendor/files/vendor.service").source, Source::Deb(_)), "the original stays as shipped");
+        assert_eq!((node("/opt/Vendor/.installed").size, inline("/opt/Vendor/.installed").as_str()), (0, ""));
+
+        let warnings: Vec<String> = t.warnings.iter().map(ToString::to_string).collect();
+        let apt: Vec<&String> = warnings.iter().filter(|w| w.contains("apt repository")).collect();
+        assert_eq!(apt.len(), 1, "{warnings:?}");
+        assert!(apt[0].starts_with("postinst: 2 lines set up the vendor's apt repository"), "{}", apt[0]);
     }
 
     /// Knows three libraries and nothing about dependency trees or installed programs.

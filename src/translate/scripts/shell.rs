@@ -304,10 +304,15 @@ pub(super) fn tokenize(s: &str, vars: &HashMap<String, String>) -> Vec<Tok> {
     let chars: Vec<char> = s.chars().collect();
     let mut toks = Vec::new();
     let mut i = 0;
+    // Inside `[[ ... ]]`, && and || combine tests instead of separating commands.
+    let mut double_bracket = false;
     while i < chars.len() {
         let c = chars[i];
         let next = chars.get(i + 1).copied();
-        if c.is_whitespace() {
+        if double_bracket && ((c == '&' && next == Some('&')) || (c == '|' && next == Some('|'))) {
+            toks.push(Tok::Word(format!("{c}{c}")));
+            i += 2;
+        } else if c.is_whitespace() {
             i += 1;
         } else if c == '#' {
             break;
@@ -341,6 +346,11 @@ pub(super) fn tokenize(s: &str, vars: &HashMap<String, String>) -> Vec<Tok> {
                 // "2>/dev/null": the digits name a file descriptor.
                 i = redirect(&chars, i, vars, &mut toks);
             } else {
+                match word.as_str() {
+                    "[[" => double_bracket = true,
+                    "]]" => double_bracket = false,
+                    _ => {}
+                }
                 toks.push(Tok::Word(word));
             }
         }
@@ -392,6 +402,7 @@ pub(super) fn read_word(chars: &[char], mut i: usize, vars: &HashMap<String, Str
                             i += 2;
                         }
                         '$' => i = expand(chars, i, vars, &mut word),
+                        '`' => i = backticks(chars, i, vars, &mut word),
                         c => {
                             word.push(c);
                             i += 1;
@@ -406,11 +417,7 @@ pub(super) fn read_word(chars: &[char], mut i: usize, vars: &HashMap<String, Str
                 i += 2;
             }
             '$' => i = expand(chars, i, vars, &mut word),
-            '`' => {
-                let end = chars[i + 1..].iter().position(|c| *c == '`').map_or(chars.len(), |p| i + 2 + p);
-                word.extend(&chars[i..end]);
-                i = end;
-            }
+            '`' => i = backticks(chars, i, vars, &mut word),
             c => {
                 word.push(c);
                 i += 1;
@@ -442,8 +449,8 @@ pub(super) fn expand(chars: &[char], i: usize, vars: &HashMap<String, String>, w
                 }
             }
             let inner: String = chars[(i + 2).min(j)..j.saturating_sub(1).max(i + 2)].iter().collect();
-            match dirname_of(&inner, vars) {
-                Some(dir) => word.push_str(&dir),
+            match substitute(&inner, vars) {
+                Some(value) => word.push_str(&value),
                 None => {
                     // Still unresolved (it keeps the "$("), but with known variables
                     // filled in so messages show real paths.
@@ -465,14 +472,9 @@ pub(super) fn expand(chars: &[char], i: usize, vars: &HashMap<String, String>, w
                 return chars.len();
             };
             let inner: String = chars[i + 2..i + close].iter().collect();
-            let (name, default) = match inner.split_once(":-").or_else(|| inner.split_once('-')) {
-                Some((n, d)) => (n.to_string(), Some(d.to_string())),
-                None => (inner.clone(), None),
-            };
-            match (vars.get(&name), default) {
-                (Some(v), Some(d)) if v.is_empty() && !unresolved(&d) => word.push_str(&d),
-                (Some(v), _) => word.push_str(v),
-                _ => word.extend(&chars[i..=i + close]),
+            match parameter(&inner, vars) {
+                Some(v) => word.push_str(&v),
+                None => word.extend(&chars[i..=i + close]),
             }
             i + close + 1
         }
@@ -492,10 +494,22 @@ pub(super) fn expand(chars: &[char], i: usize, vars: &HashMap<String, String>, w
             }
             i + 2
         }
+        // $@ and $* are the script's (or function's) arguments, which dpkg sets.
+        Some('@' | '*') if vars.contains_key("1") => {
+            let args: Vec<&str> = (1..=9).filter_map(|n| vars.get(&n.to_string())).map(String::as_str).filter(|a| !a.is_empty()).collect();
+            word.push_str(&args.join(" "));
+            i + 2
+        }
+        // Other special parameters such as $? and $$ stay as written, unresolved.
+        Some(c) if "@*#?!$-".contains(*c) => {
+            word.push('$');
+            word.push(*c);
+            i + 2
+        }
+        // Any other `$` is a plain character.
         Some(_) => {
             word.push('$');
-            word.push(chars[i + 1]);
-            i + 2
+            i + 1
         }
         None => {
             word.push('$');
@@ -504,19 +518,124 @@ pub(super) fn expand(chars: &[char], i: usize, vars: &HashMap<String, String>, w
     }
 }
 
-/// Evaluates `dirname <literal path>`, the one command substitution maintainer scripts
-/// use to build paths.
-pub(super) fn dirname_of(inner: &str, vars: &HashMap<String, String>) -> Option<String> {
-    let rest = inner.trim().strip_prefix("dirname ")?;
-    let words: Vec<String> = tokenize(rest, vars)
-        .into_iter()
-        .map(|t| match t {
-            Tok::Word(w) => Some(w),
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
+/// `${NAME}`, `${NAME:-default}`, `${NAME-default}` and the pattern removals
+/// `${NAME%pat}`, `${NAME%%pat}`, `${NAME#pat}` and `${NAME##pat}`. None when the value
+/// is not known, so the expansion stays as written.
+fn parameter(inner: &str, vars: &HashMap<String, String>) -> Option<String> {
+    let len = inner.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').count();
+    let (name, op) = inner.split_at(len);
+    let value = vars.get(name)?;
+    if op.is_empty() {
+        return Some(value.clone());
+    }
+    if let Some(default) = op.strip_prefix(":-").or_else(|| op.strip_prefix('-')) {
+        // Unknown variables never get here, so only the empty case needs the default.
+        return Some(if value.is_empty() && op.starts_with(':') && !unresolved(default) { default.to_string() } else { value.clone() });
+    }
+    let (strip, pattern) = ["%%", "##", "%", "#"].iter().find_map(|o| op.strip_prefix(o).map(|p| (*o, p)))?;
+    if unresolved(pattern) || unresolved(value) {
+        return None;
+    }
+    let cuts: Vec<usize> = value.char_indices().map(|(i, _)| i).chain([value.len()]).collect();
+    let found = match strip {
+        "#" => cuts.iter().find(|&&c| pattern_match(pattern, &value[..c])).map(|&c| value[c..].to_string()),
+        "##" => cuts.iter().rev().find(|&&c| pattern_match(pattern, &value[..c])).map(|&c| value[c..].to_string()),
+        "%" => cuts.iter().rev().find(|&&c| pattern_match(pattern, &value[c..])).map(|&c| value[..c].to_string()),
+        _ => cuts.iter().find(|&&c| pattern_match(pattern, &value[c..])).map(|&c| value[..c].to_string()),
+    };
+    Some(found.unwrap_or_else(|| value.clone()))
+}
+
+/// Shell pattern matching with `*` and `?`, as in `${var%.png}` and file globs.
+pub(super) fn pattern_match(pattern: &str, s: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), s.chars().collect());
+    // Classic two pointer match with backtracking to the last '*'.
+    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(sp) = star {
+            pi = sp + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
+}
+
+/// A backquoted command substitution starting at `chars[i]`; returns the index after it.
+fn backticks(chars: &[char], i: usize, vars: &HashMap<String, String>, word: &mut String) -> usize {
+    let Some(len) = chars[i + 1..].iter().position(|c| *c == '`') else {
+        word.extend(&chars[i..]);
+        return chars.len();
+    };
+    let inner: String = chars[i + 1..i + 1 + len].iter().collect();
+    match substitute(&inner, vars) {
+        Some(value) => word.push_str(&value),
+        None => word.extend(&chars[i..i + 2 + len]),
+    }
+    i + 2 + len
+}
+
+/// Evaluates a command substitution the analyzer knows the answer to on Arch: where a
+/// tool is (`command -v`, `which`), who runs the script (`id -u`: root), the folder
+/// (`pwd`), a user or group lookup (`getent`: not there yet on a first install), the
+/// init system (systemd), `dirname`/`basename` of a path, and `echo WORD | sed s/...`.
+/// None for anything else, which then stays unresolved.
+pub(super) fn substitute(inner: &str, vars: &HashMap<String, String>) -> Option<String> {
+    let text = inner.trim();
+    if system::probes_init_system(text) {
+        return Some("systemd".into());
+    }
+    let cmds = split_commands(tokenize(text, vars));
+    let first = cmds.first()?;
+    let words: Vec<&str> = first.words.iter().map(String::as_str).collect();
+    // `cmd || true` and `cmd || :` only matter when cmd fails, which a known answer rules out.
+    let alone = cmds.len() == 1
+        || (cmds.len() == 2 && first.sep == Sep::Or && matches!(cmds[1].words.as_slice(), [w] if w == "true" || w == ":"));
+    if cmds.len() == 2 && first.sep == Sep::Pipe {
+        return echo_sed(&words, &cmds[1].words);
+    }
+    if !alone {
+        return None;
+    }
     match words.as_slice() {
-        [p] if p.starts_with('/') && !unresolved(p) => Some(parent(&resolve("/", p)).to_string()),
+        ["command", "-v", tool] | ["which", tool] | ["type", "-p" | "-P", tool] if !unresolved(tool) => system::tool_path(tool),
+        ["id", "-u" | "-g" | "-ru" | "-rg"] => Some("0".into()),
+        ["whoami"] | ["id", "-un"] => Some("root".into()),
+        ["pwd"] => vars.get("PWD").cloned(),
+        ["getent", "group" | "passwd", name] if !unresolved(name) => Some(String::new()),
+        ["dirname", p] if p.starts_with('/') && !unresolved(p) => Some(parent(&resolve("/", p)).to_string()),
+        ["basename", p] if !unresolved(p) => Some(basename(p.trim_end_matches('/')).to_string()),
         _ => None,
     }
+}
+
+/// `echo WORDS | sed [-E] [-e] 's/.../.../'` on literal words.
+fn echo_sed(echo: &[&str], sed: &[String]) -> Option<String> {
+    let ["echo", input @ ..] = echo else {
+        return None;
+    };
+    if input.iter().any(|w| unresolved(w) || w.starts_with('-')) {
+        return None;
+    }
+    let mut extended = false;
+    let mut expr = None;
+    for w in sed.iter().skip(1) {
+        match w.as_str() {
+            "-E" | "-r" => extended = true,
+            "-e" => {}
+            e if expr.is_none() && !e.starts_with('-') => expr = Some(e),
+            _ => return None,
+        }
+    }
+    (sed.first()? == "sed").then_some(())?;
+    Some(super::sed::Substitution::parse(expr?, extended)?.apply(&input.join(" ")))
 }

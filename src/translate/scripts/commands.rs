@@ -57,23 +57,224 @@ pub(super) fn chmod(args: &[String]) -> Outcome {
     let [mode, paths @ ..] = args.as_slice() else {
         return Outcome::Unknown("chmod without arguments".into());
     };
-    let mode = match u32::from_str_radix(mode, 8) {
-        Ok(m) if (3..=4).contains(&mode.len()) && m <= 0o7777 => m,
-        _ => return Outcome::Unknown("only numeric chmod modes are translated".into()),
+    let Some(paths) = literal_paths(paths) else {
+        return Outcome::Unknown("chmod on a path pacdeb cannot resolve".into());
     };
-    match literal_paths(paths) {
-        Some(paths) => Outcome::Actions(paths.into_iter().map(|path| Action::Chmod { path, mode }).collect()),
-        None => Outcome::Unknown("chmod on a path pacdeb cannot resolve".into()),
+    match u32::from_str_radix(mode, 8) {
+        Ok(m) if (3..=4).contains(&mode.len()) && m <= 0o7777 => {
+            Outcome::Actions(paths.into_iter().map(|path| Action::Chmod { path, mode: m }).collect())
+        }
+        _ if symbolic_mode(0o644, mode).is_some() => {
+            Outcome::Actions(paths.into_iter().map(|path| Action::ModeChange { path, spec: mode.to_string() }).collect())
+        }
+        _ => Outcome::Unknown(format!("could not read the chmod mode '{mode}'")),
     }
 }
 
-pub(super) fn chown(args: &[String]) -> Outcome {
-    let owner = args.iter().find(|a| !a.starts_with('-'));
-    let to_root = owner.is_some_and(|o| o.split([':', '.']).all(|part| part.is_empty() || part == "root" || part == "0"));
-    if to_root {
-        Outcome::Handled("every file in the package is owned by root")
+/// Applies a symbolic chmod spec (`u+s`, `g+s`, `a+x`, `+x`, `go-w`, `u=rwx,go=rx`) to
+/// `mode`. None when the spec is not one pacdeb reads.
+pub(crate) fn symbolic_mode(mode: u32, spec: &str) -> Option<u32> {
+    let mut mode = mode;
+    for clause in spec.split(',') {
+        let at = clause.find(['+', '-', '='])?;
+        let (who, rest) = clause.split_at(at);
+        if !who.chars().all(|c| "ugoa".contains(c)) {
+            return None;
+        }
+        let (op, perms) = rest.split_at(1);
+        let mut bits = 0;
+        let who = if who.is_empty() { "a" } else { who };
+        for p in perms.chars() {
+            for w in who.chars() {
+                bits |= match (w, p) {
+                    ('u' | 'a', 'r') => 0o400,
+                    ('u' | 'a', 'w') => 0o200,
+                    ('u' | 'a', 'x') => 0o100,
+                    ('u', 's') => 0o4000,
+                    ('g', 's') => 0o2000,
+                    ('a', 's') => 0o6000,
+                    ('o' | 'a', 't') => 0o1000,
+                    ('g', 'r') => 0o040,
+                    ('g', 'w') => 0o020,
+                    ('g', 'x') => 0o010,
+                    ('o', 'r') => 0o004,
+                    ('o', 'w') => 0o002,
+                    ('o', 'x') => 0o001,
+                    (_, 'r' | 'w' | 'x' | 's' | 't') => 0,
+                    _ => return None,
+                };
+                if w == 'a' {
+                    bits |= match p {
+                        'r' => 0o044,
+                        'w' => 0o022,
+                        'x' => 0o011,
+                        _ => 0,
+                    };
+                }
+            }
+        }
+        let scope: u32 = who.chars().map(|w| match w {
+            'u' => 0o4700,
+            'g' => 0o2070,
+            'o' => 0o1007,
+            _ => 0o7777,
+        }).fold(0, |a, b| a | b);
+        mode = match op {
+            "+" => mode | bits,
+            "-" => mode & !bits,
+            _ => (mode & !scope) | bits,
+        };
+    }
+    Some(mode)
+}
+
+/// `chown OWNER[:GROUP] PATH...` and `chgrp GROUP PATH...`. Root needs nothing; other
+/// literal owners become an Owner action.
+pub(super) fn chown(cmd: &str, args: &[String]) -> Outcome {
+    let words: Vec<&String> = args.iter().filter(|a| *a != "--").collect();
+    if words.iter().any(|a| a.starts_with('-')) {
+        return Outcome::Unknown(format!("{cmd} options are not translated"));
+    }
+    let [owner, paths @ ..] = words.as_slice() else {
+        return Outcome::Unknown(format!("{cmd} without arguments"));
+    };
+    let (user, group) = if cmd == "chgrp" {
+        (None, Some(owner.as_str()))
     } else {
-        Outcome::Unknown("pacman packages hold root owned files; other owners need a manual step".into())
+        match owner.split_once([':', '.']) {
+            Some((u, g)) => ((!u.is_empty()).then_some(u), (!g.is_empty()).then_some(g)),
+            None => (Some(owner.as_str()), None),
+        }
+    };
+    let is_root = |n: Option<&str>| n.is_none_or(|n| n == "root" || n == "0");
+    if is_root(user) && is_root(group) {
+        return Outcome::Handled("every file in the package is owned by root");
+    }
+    let name = |n: Option<&str>| -> Result<Option<String>, ()> {
+        match n {
+            None => Ok(None),
+            Some(n) if n == "root" || n == "0" => Ok(None),
+            // Debian's nogroup is called nobody on Arch.
+            Some("nogroup") => Ok(Some("nobody".to_string())),
+            Some(n) => literal_name(n).map(Some).ok_or(()),
+        }
+    };
+    let (Ok(user), Ok(group), Some(paths)) = (name(user), name(group), literal_paths(paths)) else {
+        return Outcome::Unknown(format!("could not read the {cmd} arguments"));
+    };
+    Outcome::Actions(paths.into_iter().map(|path| Action::Owner { path, user: user.clone(), group: group.clone() }).collect())
+}
+
+/// `xdg-icon-resource install [options] --size N FILE [NAME]`: the icon goes into the
+/// hicolor theme in the package. Removal and cache updates are pacman's.
+pub(super) fn xdg_icon_resource(args: &[String]) -> Outcome {
+    let (opts, positional) = split_args(args, &["--size", "--theme", "--context", "--mode"]);
+    match positional.first().copied() {
+        Some("forceupdate") => return Outcome::Hook("icon cache"),
+        Some("uninstall") => return Outcome::Handled("pacman removes the icon with the package"),
+        Some("install") => {}
+        _ => return Outcome::Unknown("could not read the xdg-icon-resource arguments".into()),
+    }
+    if opts.get("--mode").is_some_and(|m| *m == "user") {
+        return Outcome::Unknown("installs an icon for one user only".into());
+    }
+    let (Some(size), [file, rest @ ..]) = (opts.get("--size"), &positional[1..]) else {
+        return Outcome::Unknown("could not read the xdg-icon-resource arguments".into());
+    };
+    let Some(from) = literal_path(file) else {
+        return Outcome::Unknown("installs an icon from a path pacdeb cannot resolve".into());
+    };
+    let file_name = basename(&from);
+    let (stem, ext) = file_name.rsplit_once('.').unwrap_or((file_name, "png"));
+    let name = match rest {
+        [] => stem.to_string(),
+        [n] if !unresolved(n) && !n.contains('/') => n.to_string(),
+        _ => return Outcome::Unknown("could not read the xdg-icon-resource arguments".into()),
+    };
+    if !size.chars().all(|c| c.is_ascii_digit()) || size.is_empty() {
+        return Outcome::Unknown(format!("icon size '{size}' is not a number"));
+    }
+    let theme = opts.get("--theme").copied().unwrap_or("hicolor");
+    let context = opts.get("--context").copied().unwrap_or("apps");
+    let to = format!("/usr/share/icons/{theme}/{size}x{size}/{context}/{name}.{ext}");
+    Outcome::Actions(vec![Action::Copy { from, to }])
+}
+
+/// `xdg-desktop-menu install [--mode system] [--novendor] FILE.desktop...`: the launcher
+/// goes into /usr/share/applications in the package.
+pub(super) fn xdg_desktop_menu(args: &[String]) -> Outcome {
+    let (opts, positional) = split_args(args, &["--mode"]);
+    match positional.first().copied() {
+        Some("forceupdate") => return Outcome::Hook("desktop database"),
+        Some("uninstall") => return Outcome::Handled("pacman removes the launcher with the package"),
+        Some("install") => {}
+        _ => return Outcome::Unknown("could not read the xdg-desktop-menu arguments".into()),
+    }
+    if opts.get("--mode").is_some_and(|m| *m == "user") {
+        return Outcome::Unknown("installs a launcher for one user only".into());
+    }
+    let mut actions = Vec::new();
+    for f in &positional[1..] {
+        match literal_path(f) {
+            Some(from) if from.ends_with(".desktop") => {
+                let to = format!("/usr/share/applications/{}", basename(&from));
+                actions.push(Action::Copy { from, to });
+            }
+            Some(_) => return Outcome::Unknown("only .desktop files are translated from xdg-desktop-menu".into()),
+            None => return Outcome::Unknown("installs a launcher from a path pacdeb cannot resolve".into()),
+        }
+    }
+    if actions.is_empty() {
+        return Outcome::Unknown("could not read the xdg-desktop-menu arguments".into());
+    }
+    Outcome::Actions(actions)
+}
+
+/// `sed -i [-e] 's/.../.../' FILE...` on files the package ships.
+pub(super) fn sed_in_place(args: &[String]) -> Outcome {
+    let mut in_place = false;
+    let mut extended = false;
+    let mut expr = None;
+    let mut files = Vec::new();
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        match a.as_str() {
+            "-i" | "--in-place" => in_place = true,
+            "-E" | "-r" | "--regexp-extended" => extended = true,
+            "-e" | "--expression" => {
+                i += 1;
+                if expr.replace(args.get(i).cloned().unwrap_or_default()).is_some() {
+                    return Outcome::Unknown("sed with more than one expression is not translated".into());
+                }
+            }
+            s if s.starts_with("-i") => return Outcome::Unknown(format!("sed {s} keeps a backup, which is not translated")),
+            s if s.starts_with('-') => return Outcome::Unknown(format!("sed option {s} is not translated")),
+            s if expr.is_none() => expr = Some(s.to_string()),
+            _ => files.push(a),
+        }
+        i += 1;
+    }
+    if !in_place {
+        return Outcome::Unknown("sed without -i only prints; no translation".into());
+    }
+    let Some(sed) = expr.as_deref().filter(|e| !unresolved(e)).and_then(|e| super::sed::Substitution::parse(e, extended)) else {
+        return Outcome::Unknown("only a single sed s/// command is translated".into());
+    };
+    match literal_paths(&files) {
+        Some(paths) => Outcome::Actions(paths.into_iter().map(|path| Action::Edit { path, sed: sed.clone() }).collect()),
+        None => Outcome::Unknown("sed -i on a path pacdeb cannot resolve".into()),
+    }
+}
+
+/// `touch FILE...`: an empty file if the package has none; otherwise only a time stamp.
+pub(super) fn touch(args: &[String]) -> Outcome {
+    let paths: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    if args.iter().any(|a| a == "-c" || a == "--no-create") {
+        return Outcome::Handled("only updates a time stamp");
+    }
+    match literal_paths(&paths) {
+        Some(paths) => Outcome::Actions(paths.into_iter().map(|path| Action::Touch { path }).collect()),
+        None => Outcome::Unknown("touch on a path pacdeb cannot resolve".into()),
     }
 }
 
@@ -144,25 +345,52 @@ pub(super) fn mkdir(args: &[String]) -> Outcome {
     }
 }
 
-/// `install -d <dirs>` and `install [-m mode] <file> <dest>`.
+/// `install -d <dirs>`, `install [-D] [-m mode] <file> <dest>` and
+/// `install [-m mode] <files> -t <dir>`, with short flags combined (`-Dm0644`).
 pub(super) fn install(args: &[String]) -> Outcome {
     let mut dirs = false;
     let mut mode = None;
+    let mut target_dir = None;
     let mut paths = Vec::new();
     let mut i = 0;
     while let Some(a) = args.get(i) {
-        match a.as_str() {
-            "-d" => dirs = true,
-            "-m" => {
-                i += 1;
-                mode = args.get(i).and_then(|m| u32::from_str_radix(m, 8).ok());
-                if mode.is_none() {
-                    return Outcome::Unknown("only numeric install modes are translated".into());
+        if let Some(flags) = a.strip_prefix('-').filter(|f| !f.is_empty() && !f.starts_with('-')) {
+            // Short flags, possibly combined; m and t take the rest of the word or the next one.
+            let chars: Vec<char> = flags.chars().collect();
+            let mut j = 0;
+            while j < chars.len() {
+                match chars[j] {
+                    'd' => dirs = true,
+                    'D' | 'p' | 'v' | 's' => {}
+                    f @ ('m' | 't') => {
+                        let value: String = if j + 1 < chars.len() {
+                            chars[j + 1..].iter().collect()
+                        } else {
+                            i += 1;
+                            args.get(i).cloned().unwrap_or_default()
+                        };
+                        if f == 'm' {
+                            mode = u32::from_str_radix(&value, 8).ok();
+                            if mode.is_none() {
+                                return Outcome::Unknown("only numeric install modes are translated".into());
+                            }
+                        } else {
+                            target_dir = Some(value);
+                        }
+                        break;
+                    }
+                    other => return Outcome::Unknown(format!("install option -{other} is not translated")),
                 }
+                j += 1;
             }
-            "-D" | "-p" | "-v" => {}
-            s if s.starts_with('-') => return Outcome::Unknown(format!("install option {s} is not translated")),
-            _ => paths.push(a),
+        } else if let Some(dir) = a.strip_prefix("--target-directory=") {
+            target_dir = Some(dir.to_string());
+        } else if let Some(m) = a.strip_prefix("--mode=") {
+            mode = u32::from_str_radix(m, 8).ok();
+        } else if a.starts_with("--") {
+            return Outcome::Unknown(format!("install option {a} is not translated"));
+        } else {
+            paths.push(a);
         }
         i += 1;
     }
@@ -172,12 +400,19 @@ pub(super) fn install(args: &[String]) -> Outcome {
     if dirs {
         return Outcome::Actions(p.into_iter().map(|path| Action::Mkdir { path }).collect());
     }
-    let [from, to] = p.as_slice() else {
-        return Outcome::Unknown("only 'install <file> <dest>' is translated".into());
+    let pairs: Vec<(String, String)> = match (target_dir.as_deref().map(literal_path), p.as_slice()) {
+        (Some(Some(dir)), files) => files.iter().map(|f| (f.clone(), format!("{dir}/{}", basename(f)))).collect(),
+        (Some(None), _) => return Outcome::Unknown("install into a folder pacdeb cannot resolve".into()),
+        (None, [from, to]) if paths[1].ends_with('/') => vec![(from.clone(), format!("{to}/{}", basename(from)))],
+        (None, [from, to]) => vec![(from.clone(), to.clone())],
+        _ => return Outcome::Unknown("only 'install <file> <dest>' and 'install <files> -t <dir>' are translated".into()),
     };
-    let mut actions = vec![Action::Copy { from: from.clone(), to: to.clone() }];
-    if let Some(mode) = mode {
-        actions.push(Action::Chmod { path: to.clone(), mode });
+    let mut actions = Vec::new();
+    for (from, to) in pairs {
+        actions.push(Action::Copy { from, to: to.clone() });
+        if let Some(mode) = mode {
+            actions.push(Action::Chmod { path: to, mode });
+        }
     }
     Outcome::Actions(actions)
 }
@@ -307,7 +542,11 @@ pub(super) fn gpasswd(args: &[String]) -> Outcome {
 }
 
 pub(super) fn unit_name(u: &str) -> Option<String> {
-    let name = u.trim_matches(['\'', '"']);
+    let mut name = u.trim_matches(['\'', '"']);
+    // `systemctl enable /usr/lib/systemd/system/x.service` names the unit by its file.
+    if name.starts_with('/') && [".service", ".socket", ".timer", ".path", ".target", ".mount"].iter().any(|s| name.ends_with(s)) {
+        name = basename(name);
+    }
     if name.is_empty() || unresolved(name) || name.contains(['*', '?', '/']) {
         return None;
     }

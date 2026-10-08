@@ -7,9 +7,11 @@
 //! branches whose conditions it can decide from the package itself, and functions at
 //! the place they are called. Whatever it cannot follow is reported, never guessed at.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod commands;
+pub(crate) mod sed;
+mod system;
 mod shell;
 #[cfg(test)]
 mod tests;
@@ -17,6 +19,7 @@ mod tests;
 use super::fs::mentions_apt;
 use super::pathutil::{basename, parent, resolve};
 use commands::*;
+pub(crate) use commands::symbolic_mode;
 use shell::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +37,15 @@ pub enum Action {
     SystemUser { name: String, home: Option<String>, comment: Option<String> },
     SystemGroup { name: String },
     GroupMember { user: String, group: String },
+    /// A symbolic chmod such as `u+s` or `g+s`, applied to the file's mode in the package.
+    ModeChange { path: String, spec: String },
+    /// A file owned by someone other than root. Packages hold root owned files, so this
+    /// becomes a tmpfiles.d line that sets the owner once the package is installed.
+    Owner { path: String, user: Option<String>, group: Option<String> },
+    /// `sed -i s/.../.../` on a file the package ships.
+    Edit { path: String, sed: sed::Substitution },
+    /// `touch`: an empty file when the package has none there.
+    Touch { path: String },
 }
 
 /// What a script does to a service. Arch packages never enable or start services
@@ -92,6 +104,12 @@ pub fn describe_action(a: &Action) -> String {
         Action::SystemUser { name, .. } => format!("system user {name}"),
         Action::SystemGroup { name } => format!("system group {name}"),
         Action::GroupMember { user, group } => format!("{user} in group {group}"),
+        Action::ModeChange { path, spec } => format!("mode change {spec} on {path}"),
+        Action::Owner { path, user, group } => {
+            format!("owner {}:{} on {path}", user.as_deref().unwrap_or("root"), group.as_deref().unwrap_or("root"))
+        }
+        Action::Edit { path, .. } => format!("an edit of {path}"),
+        Action::Touch { path } => format!("empty file {path}"),
     }
 }
 
@@ -105,17 +123,18 @@ const HOOKS: [(&str, &str); 6] = [
 ];
 
 /// Builtins and queries that do not change the system by themselves.
-const NEUTRAL: [&str; 23] = [
+const NEUTRAL: [&str; 25] = [
     "[", "[[", "test", "true", "false", ":", "set", "command", "which", "type", "hash", "shift",
     "break", "continue", "unset", "trap", "umask", "wait", "sleep", "readlink", "head", "tail",
-    "dirname",
+    "dirname", "getent", "id",
 ];
 
 const MAX_CALL_DEPTH: usize = 8;
 
 /// `facts` says what a path is once the package is installed: Some when the package
-/// decides it, None when it depends on the rest of the system.
-pub fn analyze(script: &str, text: &str, facts: &dyn Fn(&str) -> Option<PathFact>) -> Vec<Command> {
+/// decides it, None when it depends on the rest of the system. `glob` lists the package
+/// files a shell pattern like `/usr/share/app/icons/*.png` matches.
+pub fn analyze(script: &str, text: &str, facts: &dyn Fn(&str) -> Option<PathFact>, glob: &dyn Fn(&str) -> Vec<String>) -> Vec<Command> {
     // What dpkg passes as $1 on a fresh install or a removal. DPKG_ROOT is only set for
     // installs into another root.
     let action = match script {
@@ -123,20 +142,67 @@ pub fn analyze(script: &str, text: &str, facts: &dyn Fn(&str) -> Option<PathFact
         "postinst" => "configure",
         _ => "remove",
     };
+    let lines = logical_lines(text);
+    let first = run_pass(script, action, &lines, facts, glob, HashSet::new());
+    // Variables the apt setup commands use (a temporary folder for the key, say) mark
+    // the earlier commands that fill them as apt setup too.
+    let learned: HashSet<String> = first.apt_vars.iter().cloned().chain(first.out.iter().filter(|c| c.outcome == Outcome::AptRepo).flat_map(|c| variables_in(&c.text))).collect();
+    if learned == first.apt_vars {
+        return first.out;
+    }
+    run_pass(script, action, &lines, facts, glob, learned).out
+}
+
+fn run_pass<'a>(
+    script: &str,
+    action: &str,
+    lines: &[Line],
+    facts: &'a dyn Fn(&str) -> Option<PathFact>,
+    glob: &'a dyn Fn(&str) -> Vec<String>,
+    apt_vars: HashSet<String>,
+) -> Analyzer<'a> {
     let mut a = Analyzer {
         script: script.to_string(),
-        vars: HashMap::from([("DPKG_ROOT".into(), String::new()), ("1".into(), action.into())]),
+        // dpkg runs maintainer scripts from the root folder. $2 (the version installed
+        // before) is empty on a first install and a plain removal.
+        vars: HashMap::from([
+            ("DPKG_ROOT".into(), String::new()),
+            ("1".into(), action.into()),
+            ("2".into(), String::new()),
+            ("PWD".into(), "/".into()),
+        ]),
         functions: HashMap::new(),
         frames: Vec::new(),
         guards: Vec::new(),
         stopped: false,
         returned: false,
+        unrolled: 0,
+        broke: false,
+        continued: false,
+        apt_vars,
+        in_apt_pipeline: false,
         depth: 0,
         facts,
+        glob,
         out: Vec::new(),
     };
-    a.run_lines(&logical_lines(text));
-    a.out
+    a.run_lines(lines);
+    a
+}
+
+/// Shell variables a command still names, unexpanded. Positional parameters and the
+/// environment every script has are left out: they say nothing about the apt setup.
+fn variables_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find('$') {
+        rest = &rest[i + 1..];
+        let name: String = rest.trim_start_matches('{').chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        if !name.is_empty() && !name.starts_with(|c: char| c.is_ascii_digit()) && !["HOME", "USER", "PWD", "PATH", "SHELL"].contains(&name.as_str()) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,8 +287,18 @@ struct Analyzer<'a> {
     guards: Vec<String>,
     stopped: bool,
     returned: bool,
+    /// How many unrolled loops the analyzer is inside; `break` and `continue` act on them.
+    unrolled: usize,
+    broke: bool,
+    continued: bool,
+    /// Variables holding apt locations (sources lists, keyrings), so commands using them
+    /// count as apt repository setup.
+    apt_vars: HashSet<String>,
+    /// Inside a pipeline any part of which sets up apt (`curl KEY | gpg --dearmor`).
+    in_apt_pipeline: bool,
     depth: usize,
     facts: &'a dyn Fn(&str) -> Option<PathFact>,
+    glob: &'a dyn Fn(&str) -> Vec<String>,
     out: Vec<Command>,
 }
 
@@ -247,11 +323,20 @@ impl Analyzer<'_> {
         parts.join(" and ")
     }
 
+    fn halted(&self) -> bool {
+        self.stopped || self.returned || self.broke || self.continued
+    }
+
     fn run_lines(&mut self, lines: &[Line]) {
         let mut i = 0;
-        while i < lines.len() && !self.stopped && !self.returned {
+        while i < lines.len() && !self.halted() {
             let line = &lines[i];
             i += 1;
+            if let Some((var, items, body, next)) = self.unrollable_loop(lines, i - 1) {
+                i = next;
+                self.unroll(&var, &items, &body);
+                continue;
+            }
             if let Some((name, inline)) = function_start(&line.text) {
                 let body = match inline {
                     Some(body) => vec![Line { number: line.number, text: body, heredoc: None }],
@@ -283,7 +368,15 @@ impl Analyzer<'_> {
 
     fn run_cmds(&mut self, line: &Line, mut cmds: Vec<Cmd>) {
         let mut k = 0;
-        while k < cmds.len() && !self.stopped && !self.returned {
+        while k < cmds.len() && !self.halted() {
+            // A pipeline is one unit for apt setup: decide it at its first command.
+            if k == 0 || cmds[k - 1].sep != Sep::Pipe {
+                let end = (k..cmds.len()).find(|&j| cmds[j].sep != Sep::Pipe).unwrap_or(cmds.len() - 1);
+                self.in_apt_pipeline = end > k && cmds[k..=end].iter().any(|c| {
+                    let text = format!("{} {}", c.words.join(" "), c.redirects.join(" "));
+                    apt_setup_text(&text) || self.apt_vars.iter().any(|v| mentions_var(&text, v))
+                });
+            }
             let first = cmds[k].words.first().cloned().unwrap_or_default();
             match first.as_str() {
                 "if" | "elif" => {
@@ -361,6 +454,92 @@ impl Analyzer<'_> {
         }
     }
 
+    /// A `for NAME in WORDS` loop starting at `lines[at]` whose words are all known, with
+    /// globs expanded over the package's files: (name, items, body, index after `done`).
+    /// Unknown words leave the loop to the generic handling, which treats it as maybe.
+    fn unrollable_loop(&self, lines: &[Line], at: usize) -> Option<(String, Vec<String>, Vec<Line>, usize)> {
+        let text = lines[at].text.trim();
+        let rest = text.strip_prefix("for ")?;
+        let (name, rest) = rest.trim_start().split_once(char::is_whitespace)?;
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        let rest = rest.trim_start().strip_prefix("in")?;
+        // One line loops: `for x in a b; do cmd; done`.
+        let (words_text, inline_body) = match rest.split_once("; do ").or_else(|| rest.split_once(";do ")) {
+            Some((w, b)) => {
+                let body = b.trim().strip_suffix("done")?.trim().trim_end_matches(';').to_string();
+                (w, Some(body))
+            }
+            None => (rest.trim().trim_end_matches("; do").trim_end_matches(";do").trim_end_matches(';'), None),
+        };
+        let mut items = Vec::new();
+        for w in split_commands(tokenize(words_text, &self.vars)).into_iter().flat_map(|c| c.words) {
+            if unresolved(&w) {
+                return None;
+            }
+            if w.contains(['*', '?']) {
+                // Only globs over the package's own files are known; others (like
+                // /home/*) depend on the system.
+                let found = if w.starts_with('/') { (self.glob)(&w) } else { Vec::new() };
+                if found.is_empty() {
+                    return None;
+                }
+                items.extend(found);
+            } else {
+                items.push(w);
+            }
+        }
+        if items.len() > 64 {
+            return None;
+        }
+        if let Some(body) = inline_body {
+            return Some((name.to_string(), items, vec![Line { number: lines[at].number, text: body, heredoc: None }], at + 1));
+        }
+        // The body runs to the matching `done`; nested loops have their own.
+        let mut i = at + 1;
+        if lines.get(i).is_some_and(|l| l.text.trim() == "do") && !text.ends_with("do") {
+            i += 1;
+        } else if !text.ends_with("do") {
+            return None;
+        }
+        let start = i;
+        let mut depth = 1;
+        while i < lines.len() {
+            let t = lines[i].text.trim();
+            let first = t.split(|c: char| c.is_whitespace() || c == ';').next().unwrap_or("");
+            if matches!(first, "for" | "while" | "until") && (t.ends_with("do") || t.contains("; do")) {
+                depth += 1;
+            }
+            if first == "done" || t.ends_with("; done") || t.ends_with(";done") {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((name.to_string(), items, lines[start..i].to_vec(), i + 1));
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    fn unroll(&mut self, var: &str, items: &[String], body: &[Line]) {
+        self.unrolled += 1;
+        let active = self.active();
+        for item in items {
+            self.assign(var, item, active);
+            self.run_lines(body);
+            self.continued = false;
+            if self.broke {
+                self.broke = false;
+                break;
+            }
+            if self.stopped || self.returned {
+                break;
+            }
+        }
+        self.unrolled -= 1;
+    }
+
     /// Decides a condition list such as `[ -f x ] && command -v y`, and describes it.
     fn eval_list(&self, cmds: &[Cmd]) -> (Tri, CondText) {
         let mut value = Tri::Yes;
@@ -407,6 +586,16 @@ impl Analyzer<'_> {
                 _ => {}
             }
         }
+        let w: Vec<&str> = words.iter().map(String::as_str).collect();
+        match w.as_slice() {
+            // Whether a tool is installed: known for the base system.
+            ["command", "-v", tool] | ["which", tool] | ["type", tool] | ["type", "-p" | "-P", tool] | ["hash", tool] => {
+                return system::has_tool(tool).map_or(Tri::Maybe, Tri::of);
+            }
+            // Users and groups a package makes do not exist yet on a first install.
+            ["getent", "group" | "passwd", name] if !unresolved(name) => return Tri::No,
+            _ => {}
+        }
         match words.first().map(String::as_str) {
             Some("!") => self.eval_test(&words[1..]).not(),
             Some("[") | Some("[[") => {
@@ -421,14 +610,54 @@ impl Analyzer<'_> {
     }
 
     fn eval_bracket(&self, args: &[String]) -> Tri {
+        // `a || b` and `a -o b` bind looser than `a && b` and `a -a b`.
+        for or in ["||", "-o"] {
+            if let Some(i) = args.iter().position(|w| w == or) {
+                return self.eval_bracket(&args[..i]).or(self.eval_bracket(&args[i + 1..]));
+            }
+        }
+        for and in ["&&", "-a"] {
+            if let Some(i) = args.iter().position(|w| w == and) {
+                // `-a FILE` alone is the old spelling of `-e FILE`, not "and".
+                if i > 0 {
+                    return self.eval_bracket(&args[..i]).and(self.eval_bracket(&args[i + 1..]));
+                }
+            }
+        }
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
+        let number = |s: &str| s.trim().parse::<i64>().ok();
         match a.as_slice() {
             ["!", ..] => self.eval_bracket(&args[1..]).not(),
-            [op, path] if ["-e", "-f", "-x", "-d", "-L", "-h", "-r", "-s", "-w"].contains(op) => {
-                if unresolved(path) || !path.starts_with('/') {
-                    return Tri::Maybe;
+            [x, "=~", re] if !unresolved(x) && !unresolved(re) => match regex::Regex::new(re) {
+                Ok(re) => Tri::of(re.is_match(x)),
+                Err(_) => Tri::Maybe,
+            },
+            // A word that is not a number makes the test fail in the shell.
+            [x, op, y] if matches!(*op, "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge")
+                && ((!unresolved(x) && number(x).is_none()) || (!unresolved(y) && number(y).is_none())) =>
+            {
+                Tri::No
+            }
+            [x, op, y] if matches!(*op, "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge") => match (number(x), number(y)) {
+                (Some(x), Some(y)) => Tri::of(match *op {
+                    "-eq" => x == y,
+                    "-ne" => x != y,
+                    "-lt" => x < y,
+                    "-le" => x <= y,
+                    "-gt" => x > y,
+                    _ => x >= y,
+                }),
+                _ => Tri::Maybe,
+            },
+            [op, path] if ["-e", "-a", "-f", "-x", "-d", "-L", "-h", "-r", "-s", "-w"].contains(op) => {
+                // An empty word names no file.
+                if path.is_empty() {
+                    return Tri::No;
                 }
-                let Some(fact) = (self.facts)(&resolve("/", path)) else {
+                let Some(path) = self.absolute(path) else {
+                    return Tri::Maybe;
+                };
+                let Some(fact) = (self.facts)(&path).or_else(|| system::system_fact(&path)) else {
                     return Tri::Maybe;
                 };
                 use PathFact::*;
@@ -453,7 +682,23 @@ impl Analyzer<'_> {
         }
     }
 
+    /// A literal path made absolute: relative ones resolve against the working folder
+    /// when it is known.
+    fn absolute(&self, path: &str) -> Option<String> {
+        if unresolved(path) {
+            return None;
+        }
+        if path.starts_with('/') {
+            return Some(resolve("/", path));
+        }
+        let pwd = self.vars.get("PWD")?;
+        Some(resolve(pwd, path))
+    }
+
     fn assign(&mut self, name: &str, value: &str, active: Tri) {
+        if apt_setup_text(value) || self.apt_vars.iter().any(|v| mentions_var(value, v)) {
+            self.apt_vars.insert(name.to_string());
+        }
         match active {
             Tri::Yes if !unresolved(value) => {
                 self.vars.insert(name.to_string(), value.to_string());
@@ -478,6 +723,11 @@ impl Analyzer<'_> {
         let Some(first) = words.first().map(String::as_str) else {
             return;
         };
+        // `/usr/bin/xdg-icon-resource` is the same command as `xdg-icon-resource`.
+        let first = match first.rsplit_once('/') {
+            Some((dir, name)) if ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].contains(&dir) => name,
+            _ => first,
+        };
         let args = &words[1..];
         match first {
             "export" | "local" | "readonly" => {
@@ -485,6 +735,28 @@ impl Analyzer<'_> {
                     if let Some((name, value)) = assignment(w) {
                         self.assign(name, value, active);
                     }
+                }
+                return;
+            }
+            "cd" => {
+                let target = args.first().map(String::as_str).unwrap_or("/");
+                match (active, self.absolute(target)) {
+                    (Tri::Yes, Some(dir)) => {
+                        self.vars.insert("PWD".into(), dir);
+                    }
+                    (Tri::No, _) => {}
+                    _ => {
+                        self.vars.remove("PWD");
+                    }
+                }
+                return;
+            }
+            "break" | "continue" if self.unrolled > 0 => {
+                match active {
+                    Tri::Yes if first == "break" => self.broke = true,
+                    Tri::Yes => self.continued = true,
+                    Tri::Maybe => self.guards.push(format!("the {first} on line {} did not leave the loop first", line.number)),
+                    Tri::No => {}
                 }
                 return;
             }
@@ -506,6 +778,12 @@ impl Analyzer<'_> {
             _ => {}
         }
 
+        // `./file` after a `cd` names a file in that folder.
+        let args: Vec<String> = args
+            .iter()
+            .map(|a| if a.starts_with("./") || a.starts_with("../") { self.absolute(a).unwrap_or_else(|| a.clone()) } else { a.clone() })
+            .collect();
+        let args = args.as_slice();
         let Some(outcome) = self.classify(first, args, cmd, line) else {
             return;
         };
@@ -555,9 +833,12 @@ impl Analyzer<'_> {
             }
         }
         let (frames, guards) = (self.frames.len(), self.guards.len());
+        // The body's own pipelines decide for themselves.
+        let in_pipeline = std::mem::take(&mut self.in_apt_pipeline);
         self.depth += 1;
         self.run_lines(&body);
         self.depth -= 1;
+        self.in_apt_pipeline = in_pipeline;
         self.frames.truncate(frames);
         self.guards.truncate(guards);
         self.returned = false;
@@ -574,7 +855,8 @@ impl Analyzer<'_> {
         let writes: Vec<&String> = cmd.redirects.iter().filter(|t| !is_harmless_redirect(t)).collect();
         let heredoc_text = line.heredoc.as_ref().map(|h| h.body.join("\n")).unwrap_or_default();
         let all = format!("{first} {} {} {heredoc_text}", args.join(" "), cmd.redirects.join(" "));
-        if mentions_apt(&all) && first != "update-mime-database" {
+        let uses_apt_var = self.apt_vars.iter().any(|v| mentions_var(&all, v));
+        if (apt_setup_text(&all) || uses_apt_var || self.in_apt_pipeline) && first != "update-mime-database" {
             return Some(Outcome::AptRepo);
         }
         if matches!(first, "echo" | "printf") && writes.is_empty() {
@@ -594,18 +876,21 @@ impl Analyzer<'_> {
         Some(match first {
             "update-alternatives" => update_alternatives(args),
             "chmod" => chmod(args),
-            "chown" | "chgrp" => chown(args),
+            "chown" | "chgrp" => chown(first, args),
             "ln" => ln(args),
             "rm" => rm(args),
             "cp" => cp(args),
             "mkdir" => mkdir(args),
             "install" => install(args),
-            "xdg-icon-resource" if args.first().is_some_and(|a| a == "forceupdate") => Outcome::Hook("icon cache"),
-            "xdg-desktop-menu" if args.first().is_some_and(|a| a == "forceupdate") => Outcome::Hook("desktop database"),
+            "xdg-icon-resource" => xdg_icon_resource(args),
+            "xdg-desktop-menu" => xdg_desktop_menu(args),
+            "sed" => sed_in_place(args),
+            "touch" => touch(args),
             "adduser" | "useradd" => add_user(first, args),
             "addgroup" | "groupadd" => add_group(args),
             "usermod" => usermod(args),
             "gpasswd" => gpasswd(args),
+            "pkill" | "killall" => Outcome::Handled("stops a running copy of the app; pacman does not, so restart it after an update"),
             "deluser" | "delgroup" | "userdel" | "groupdel" => {
                 Outcome::Handled("Arch keeps system users and groups when a package is removed")
             }
@@ -626,12 +911,41 @@ impl Analyzer<'_> {
     }
 }
 
-pub(super) fn is_test(words: &[String]) -> bool {
-    matches!(words.first().map(String::as_str), Some("[" | "[[" | "test" | "!"))
+/// Whether `path` matches the shell glob `pattern`, where `*` and `?` stay within one
+/// path segment as they do in the shell.
+pub fn glob_path(pattern: &str, path: &str) -> bool {
+    let (p, t): (Vec<&str>, Vec<&str>) = (pattern.split('/').collect(), path.split('/').collect());
+    p.len() == t.len() && p.iter().zip(&t).all(|(p, t)| pattern_match(p, t))
 }
 
+pub(super) fn is_test(words: &[String]) -> bool {
+    matches!(words.first().map(String::as_str), Some("[" | "[[" | "test" | "!" | "command" | "which" | "type" | "hash" | "getent"))
+}
+
+/// Text that belongs to setting up the vendor's apt repository: apt's own files and
+/// tools, debsig policies, and the repository switches vendors keep in /etc/default.
+pub(super) fn apt_setup_text(text: &str) -> bool {
+    mentions_apt(text)
+        || ["apt-config", "APT_CONFIG", "APT_SOURCESDIR", "APT_TRUSTEDDIR", "/debsig/", "repo_add_once", "repo_reenable_on_distupgrade"]
+            .iter()
+            .any(|m| text.contains(m))
+}
+
+/// Whether text still refers to shell variable `name` (unexpanded).
+pub(super) fn mentions_var(text: &str, name: &str) -> bool {
+    let plain = format!("${name}");
+    text.contains(&format!("${{{name}}}"))
+        || text.match_indices(&plain).any(|(i, _)| !text[i + plain.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+}
+
+/// Whether a word still holds an expansion: `$NAME`, `${...}`, `$(...)`, a special
+/// parameter or a backquote. A `$` before anything else (the end of a regex like
+/// `^[0-9]+$`) is a plain character.
 pub(super) fn unresolved(s: &str) -> bool {
-    s.contains(['$', '`'])
+    let chars: Vec<char> = s.chars().collect();
+    chars.iter().enumerate().any(|(i, c)| {
+        *c == '`' || (*c == '$' && chars.get(i + 1).is_some_and(|n| n.is_ascii_alphanumeric() || "_{(@*#?!$-".contains(*n)))
+    })
 }
 
 pub(super) fn assignment(word: &str) -> Option<(&str, &str)> {
