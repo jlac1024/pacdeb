@@ -26,7 +26,7 @@ pub fn pick(json: &str, asset_pattern: &str, prerelease: bool) -> Result<Latest>
             continue;
         };
         let tag = r.get("tag_name").and_then(Value::as_str).unwrap_or_default();
-        let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
+        let version = tag_version(tag);
         let url = asset.get("browser_download_url").and_then(Value::as_str).map(String::from);
         let checksum = asset
             .get("digest")
@@ -38,9 +38,26 @@ pub fn pick(json: &str, asset_pattern: &str, prerelease: bool) -> Result<Latest>
     bail!("no release has an asset matching '{asset_pattern}'")
 }
 
+/// The version in a release tag: "v1.2.3" and "desktop-v2026.9.1" carry words before
+/// the number, which the deb's own version does not have.
+fn tag_version(tag: &str) -> String {
+    match tag.find(|c: char| c.is_ascii_digit()) {
+        Some(i) => tag[i..].to_string(),
+        None => tag.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_versions_from_tags() {
+        let cases = [("v1.14.4", "1.14.4"), ("desktop-v2026.9.1", "2026.9.1"), ("release-2.0-beta1", "2.0-beta1"), ("1.0", "1.0"), ("nightly", "nightly")];
+        for (tag, want) in cases {
+            assert_eq!(tag_version(tag), want, "{tag}");
+        }
+    }
 
     fn fixture() -> String {
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sources/github-releases.json")).unwrap()

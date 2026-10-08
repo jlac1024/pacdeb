@@ -60,13 +60,24 @@ fn fetch_key(repo: &str, src: &KeySource, paths: &Paths) -> Result<(PathBuf, Vec
         let _ = fs::remove_file(&tmp);
         bail!("{label} holds no public key");
     }
+    // A pinned fingerprint may name the primary key or a subkey; people see only the
+    // primary keys, since subkeys belong to them.
+    let primary = primary_fingerprints(&tmp, &fprs, paths);
     if let Some(want) = src.fingerprint.as_deref().map(normalize_fpr).filter(|f| !f.is_empty()) {
         if !fprs.iter().any(|f| f.eq_ignore_ascii_case(&want)) {
             let _ = fs::remove_file(&tmp);
-            bail!("the key from {label} has fingerprint {}, not the pinned {want}; not using it", fprs.join(", "));
+            bail!("the key from {label} has fingerprint {}, not the pinned {want}; not using it", primary.join(", "));
         }
     }
-    Ok((tmp, fprs))
+    Ok((tmp, primary))
+}
+
+/// The primary keys' fingerprints in a key file, or all of them if gpg cannot list keys.
+fn primary_fingerprints(key: &Path, all: &[String], paths: &Paths) -> Vec<String> {
+    match gpg::key_info(key, &paths.cache.join("gnupg").join("check")) {
+        Ok(keys) if !keys.is_empty() => keys.into_iter().map(|k| k.fingerprint).collect(),
+        _ => all.to_vec(),
+    }
 }
 
 /// Moves a fetched key into the config dir as the repository's key.
@@ -601,7 +612,12 @@ fn key(name: &str, o: &Opts) -> Result<()> {
     if src.fingerprint.is_none() {
         src.fingerprint = repo.key_fingerprint.clone();
     }
-    let old: Vec<String> = repo.key.as_ref().and_then(|k| gpg::fingerprints(&paths.config.join(k), &paths.cache.join("gnupg").join("check")).ok()).unwrap_or_default();
+    let old: Vec<String> = repo
+        .key
+        .as_ref()
+        .map(|k| paths.config.join(k))
+        .and_then(|k| gpg::fingerprints(&k, &paths.cache.join("gnupg").join("check")).ok().map(|all| primary_fingerprints(&k, &all, &paths)))
+        .unwrap_or_default();
     let (tmp, fprs) = match fetch_key(name, &src, &paths) {
         Ok(k) => k,
         Err(e) if repo.key_fingerprint.is_some() && o.key.fingerprint.is_none() => {
