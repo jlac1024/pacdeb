@@ -102,6 +102,10 @@ pub struct App {
     /// Removed from depends and optdepends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drop_depends: Vec<String>,
+    /// Conversion warnings the person reviewed and accepted (Warning::key values);
+    /// builds show only the others.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted_warnings: Vec<String>,
     pub source: SourceConfig,
 }
 
@@ -114,6 +118,7 @@ impl App {
             conflicts: Vec::new(),
             extra_depends: Vec::new(),
             drop_depends: Vec::new(),
+            accepted_warnings: Vec::new(),
             source,
         }
     }
@@ -361,6 +366,16 @@ pub struct AppState {
     /// What the source offered at the last 'pacdeb update'.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available: Option<Available>,
+    /// The warnings of the last build, for 'pacdeb accept'.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<RecordedWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedWarning {
+    pub key: String,
+    pub text: String,
 }
 
 /// The newest version a source offered when it was last refreshed.

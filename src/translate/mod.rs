@@ -126,6 +126,19 @@ pub enum Warning {
     Other(String),
 }
 
+impl Warning {
+    /// What makes two warnings the same one across versions: the kind and its text,
+    /// without script line numbers, which move between releases.
+    pub fn key(&self) -> String {
+        match self {
+            Warning::Unmapped { field, deps } => format!("unmapped {field}: {deps}"),
+            Warning::Untranslated { script, text, .. } => format!("untranslated {script}: {}", text.trim()),
+            Warning::SystemDependent { script, text, .. } => format!("system-dependent {script}: {}", text.trim()),
+            Warning::Other(s) => format!("other: {s}"),
+        }
+    }
+}
+
 impl std::fmt::Display for Warning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -554,6 +567,16 @@ fn ensure_parents(nodes: &mut Vec<Node>) {
 
 #[cfg(test)]
 pub mod tests {
+
+    #[test]
+    fn warnings_keep_their_identity_across_versions() {
+        let at = |line| Warning::Untranslated { script: "postinst".into(), line, text: "frobnicate --all ".into(), why: "unknown command".into() };
+        assert_eq!(at(12).key(), at(40).key(), "line numbers move between releases");
+        assert_eq!(at(12).key(), "untranslated postinst: frobnicate --all");
+        let dep = |deps: &str| Warning::Unmapped { field: "Depends".into(), deps: deps.into() };
+        assert_ne!(dep("libfoo1").key(), dep("libfoo2").key());
+    }
+
     use super::*;
     use crate::deb::testutil::{DebBuilder, TestEntry};
     use std::collections::BTreeMap;

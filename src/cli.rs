@@ -71,6 +71,11 @@ pub fn run(args: &[String]) -> ExitCode {
             names if names.iter().all(|n| !n.starts_with('-')) => finish(crate::apps::remove(names)),
             _ => usage_error("remove", "usage: pacdeb remove <app>..."),
         },
+        "accept" => match &args[1..] {
+            [name] if !name.starts_with('-') => finish(crate::apps::accept(name, false)),
+            [name, flag] if flag == "--reset" && !name.starts_with('-') => finish(crate::apps::accept(name, true)),
+            _ => usage_error("accept", "usage: pacdeb accept <app> [--reset]"),
+        },
         "untrack" => match &args[1..] {
             [name] if !name.starts_with('-') => finish(crate::apps::untrack(name)),
             _ => usage_error("untrack", "usage: pacdeb untrack <app>"),

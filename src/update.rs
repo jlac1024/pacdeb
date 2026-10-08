@@ -281,6 +281,9 @@ fn remember_head(s: &mut AppState, latest: &Latest) {
 fn build_and_record(name: &str, app: &App, deb: &Path, latest: Option<&Latest>, direct: bool, paths: &Paths, state: &mut State) -> Result<Built> {
     let prev = state.apps.get(name).cloned();
     let built = convert::build_package(deb, direct, None, Some(app), prev.as_ref())?;
+    if built.warnings.iter().any(|w| !app.accepted_warnings.contains(&w.key)) {
+        println!("{}", Style::for_stdout().dim(&format!("{name}: once you have read the warnings, 'pacdeb accept {name}' hides them on later upgrades")));
+    }
     record(state, name, &built, latest);
     state.save(&paths.state)?;
     let mut config = Config::load(&paths.config)?;
@@ -305,6 +308,7 @@ fn record(state: &mut State, name: &str, built: &Built, latest: Option<&Latest>)
     let s = state.apps.entry(name.to_string()).or_default();
     s.deb_version = Some(built.deb_version.clone());
     s.pkgrel = built.pkgrel;
+    s.warnings = built.warnings.clone();
     if let Some(l) = latest {
         remember_head(s, l);
     }
@@ -437,7 +441,7 @@ mod tests {
     use super::*;
 
     fn built(path: &str, v: &str, rel: u32) -> Built {
-        Built { path: PathBuf::from(path), deb_version: v.into(), pkgrel: rel, renamed: None }
+        Built { path: PathBuf::from(path), deb_version: v.into(), pkgrel: rel, renamed: None, warnings: Vec::new() }
     }
 
     #[test]
