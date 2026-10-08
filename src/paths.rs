@@ -2,8 +2,7 @@
 //! Where pacdeb keeps its config, state and cache.
 
 use std::ffi::OsString;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::{Context, Result, bail};
 
@@ -19,11 +18,7 @@ impl Paths {
     pub fn from_env() -> Result<Paths> {
         let p = Paths::from_vars(|k| std::env::var_os(k))?;
         let abs = |p: PathBuf| std::path::absolute(&p).context(p.display());
-        let p = Paths { config: abs(p.config)?, state: abs(p.state)?, cache: abs(p.cache)? };
-        if std::env::var_os("PACDEB_HOME").is_none_or(|v| v.is_empty()) {
-            migrate_from_ferry(&p)?;
-        }
-        Ok(p)
+        Ok(Paths { config: abs(p.config)?, state: abs(p.state)?, cache: abs(p.cache)? })
     }
 
     /// Where makepkg work directories live.
@@ -58,34 +53,6 @@ impl Paths {
             cache: xdg("XDG_CACHE_HOME", ".cache"),
         })
     }
-}
-
-/// pacdeb was called Ferry while it was built. The first run moves the old folders to
-/// the new names, and points the build paths recorded in state.toml at the new cache.
-/// Nothing happens once the new folders exist.
-fn migrate_from_ferry(p: &Paths) -> Result<()> {
-    let old = |new: &Path| new.with_file_name("ferry");
-    let mut moved = Vec::new();
-    for new in [&p.config, &p.state, &p.cache] {
-        let legacy = old(new);
-        if !new.exists() && legacy.is_dir() {
-            fs::rename(&legacy, new).context(format!("moving {} to {}", legacy.display(), new.display()))?;
-            moved.push(format!("{} -> {}", legacy.display(), new.display()));
-        }
-    }
-    if moved.is_empty() {
-        return Ok(());
-    }
-    let state = p.state.join("state.toml");
-    if let Ok(text) = fs::read_to_string(&state) {
-        let (from, to) = (old(&p.cache).display().to_string(), p.cache.display().to_string());
-        let fixed = text.replace(&format!("{from}/"), &format!("{to}/"));
-        if fixed != text {
-            fs::write(&state, fixed).context(state.display())?;
-        }
-    }
-    eprintln!("pacdeb (formerly Ferry) moved its folders: {}", moved.join(", "));
-    Ok(())
 }
 
 #[cfg(test)]
@@ -129,30 +96,5 @@ mod tests {
     #[test]
     fn needs_home() {
         assert!(paths(&[]).unwrap_err().to_string().contains("HOME is not set"));
-    }
-
-    #[test]
-    fn moves_the_old_ferry_folders_once() {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox/test-migrate");
-        let _ = fs::remove_dir_all(&base);
-        let (config, state, cache) = (base.join(".config"), base.join(".local/share"), base.join(".cache"));
-        for d in [&config, &state, &cache] {
-            fs::create_dir_all(d.join("ferry")).unwrap();
-        }
-        fs::write(config.join("ferry/apps.toml"), "[settings]\n").unwrap();
-        let old_pkg = cache.join("ferry/packages/app-1.0-1-x86_64.pkg.tar.zst");
-        fs::write(state.join("ferry/state.toml"), format!("[apps.app]\npackages = [\"{}\"]\n", old_pkg.display())).unwrap();
-
-        let p = Paths { config: config.join("pacdeb"), state: state.join("pacdeb"), cache: cache.join("pacdeb") };
-        migrate_from_ferry(&p).unwrap();
-        assert!(p.config.join("apps.toml").exists());
-        assert!(!config.join("ferry").exists());
-        let new_state = fs::read_to_string(p.state.join("state.toml")).unwrap();
-        assert!(new_state.contains(&cache.join("pacdeb/packages/app-1.0-1-x86_64.pkg.tar.zst").display().to_string()), "{new_state}");
-
-        // A second run, or one where the new folders already exist, changes nothing.
-        fs::create_dir_all(config.join("ferry")).unwrap();
-        migrate_from_ferry(&p).unwrap();
-        assert!(config.join("ferry").exists());
     }
 }
