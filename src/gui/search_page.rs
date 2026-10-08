@@ -102,6 +102,10 @@ fn render(ctx: &Rc<Ctx>, page: &Rc<Page>) {
     let tracked = aptrepos::tracked_packages(&config);
     for f in hits.iter().take(SHOWN) {
         let row = plain_row(&f.package.name, &format!("{} · {} · {}", f.repo, f.package.version, f.package.summary));
+        let details = gtk::Button::builder().icon_name("help-about-symbolic").tooltip_text("Details").valign(gtk::Align::Center).css_classes(["flat"]).build();
+        let (ctx2, spec) = (ctx.clone(), format!("{}/{}", f.package.name, f.repo));
+        details.connect_clicked(move |_| show_details(&ctx2, &spec));
+        row.add_suffix(&details);
         if tracked.contains(&(f.repo.clone(), f.package.name.clone())) {
             row.add_suffix(&gtk::Label::builder().label("Tracked").css_classes(["dim-label"]).build());
         } else {
@@ -117,6 +121,29 @@ fn render(ctx: &Rc<Ctx>, page: &Rc<Page>) {
         1 => "1 match".to_string(),
         n => format!("{n} matches"),
     });
+}
+
+/// What 'pacdeb show' says about a package, in a dialog.
+pub fn show_details(ctx: &Rc<Ctx>, spec: &str) {
+    let buffer = gtk::TextBuffer::new(None);
+    buffer.set_text("Reading...");
+    let text = gtk::TextView::builder()
+        .buffer(&buffer)
+        .editable(false)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .top_margin(12)
+        .bottom_margin(12)
+        .left_margin(12)
+        .right_margin(12)
+        .build();
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&gtk::ScrolledWindow::builder().child(&text).vexpand(true).build()));
+    let name = spec.split('/').next().unwrap_or(spec);
+    let dialog = adw::Dialog::builder().title(name).content_width(640).content_height(560).child(&view).build();
+    dialog.present(Some(&ctx.window));
+    run::quiet(&["show", spec], move |done| buffer.set_text(done.output.trim_end()));
 }
 
 /// Installs `spec` (a name, or name/repository) the way 'pacdeb install' does.

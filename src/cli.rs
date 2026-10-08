@@ -48,6 +48,10 @@ pub fn run(args: &[String]) -> ExitCode {
             _ => usage_error("update", "'pacdeb update' takes no arguments; it refreshes everything. To build and install, use 'pacdeb upgrade [app]'"),
         },
         "upgrade" => upgrade(&args[1..]),
+        "show" => match &args[1..] {
+            [name] if !name.starts_with('-') => finish(crate::show::run(name)),
+            _ => usage_error("show", "usage: pacdeb show <name|name/repository>"),
+        },
         "search" => match &args[1..] {
             [] => usage_error("search", "usage: pacdeb search <words>"),
             words => finish(crate::aptrepos::run_search(&words.join(" "))),

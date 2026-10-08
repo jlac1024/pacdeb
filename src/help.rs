@@ -21,6 +21,7 @@ Like apt:
   install <name|file.deb>       Install a tracked app, any package from the saved
                                 apt repositories, or a .deb file
   search <words>                Search the packages in the saved apt repositories
+  show <name>                   A package's details and what it needs on Arch
   list [--upgradable]           Show tracked apps, or only those with updates
 
 Managing apps and sources:
@@ -93,6 +94,17 @@ Options:
   --direct     Write the package directly instead of running makepkg
 
 If pacman fails, the built package stays in the cache and its path is printed.
+";
+
+const SHOW: &str = "\
+Usage: pacdeb show <name|name/repository>
+
+Like 'apt show': the newest version of a package in the saved apt repositories,
+with its repository, maintainer, homepage, sizes, Debian dependencies and full
+description. It also shows what the dependencies become on Arch and which have
+no Arch name, so problems show before installing. For a tracked app it adds the
+source, channel, and the versions built, installed and available. Uses the
+package lists from the last 'pacdeb update'.
 ";
 
 const SEARCH: &str = "\
@@ -331,6 +343,7 @@ pub fn page(command: &str) -> Option<&'static str> {
         "update" => UPDATE,
         "upgrade" => UPGRADE,
         "search" => SEARCH,
+        "show" => SHOW,
         "remove" => REMOVE,
         "untrack" => UNTRACK,
         "accept" => ACCEPT,
@@ -346,7 +359,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt", "upgrade", "search", "untrack", "accept"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer", "repo", "packages", "apt", "upgrade", "search", "untrack", "accept", "show"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {

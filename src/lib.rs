@@ -44,6 +44,7 @@ pub mod progress;
 pub mod registry;
 pub mod relation;
 pub mod repo;
+pub mod show;
 pub mod sources;
 pub mod style;
 pub mod timer;
