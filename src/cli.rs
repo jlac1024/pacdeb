@@ -59,10 +59,18 @@ pub fn run(args: &[String]) -> ExitCode {
             [name] if !name.starts_with('-') => finish(crate::apps::remove(name)),
             _ => usage_error("remove", "usage: pacdeb remove <app>"),
         },
-        "check" => match &args[1..] {
-            [] => finish(crate::apps::check(None)),
-            [name] if !name.starts_with('-') => finish(crate::apps::check(Some(name))),
-            _ => usage_error("check", "usage: pacdeb check [app]"),
+        "check" => {
+            let notify = args[1..].iter().any(|a| a == "--notify");
+            let rest: Vec<&String> = args[1..].iter().filter(|a| *a != "--notify").collect();
+            match rest[..] {
+                [] => finish(crate::apps::check(None, notify)),
+                [name] if !name.starts_with('-') => finish(crate::apps::check(Some(name), notify)),
+                _ => usage_error("check", "usage: pacdeb check [app] [--notify]"),
+            }
+        }
+        "timer" => match &args[1..] {
+            [action] if ["enable", "disable", "status"].contains(&action.as_str()) => finish(crate::timer::run(action)),
+            _ => usage_error("timer", "usage: pacdeb timer enable|disable|status"),
         },
         other => usage_error("", &format!("unknown command '{other}'")),
     }

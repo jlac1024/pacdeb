@@ -61,6 +61,7 @@ so you see the usual sudo prompt and pacman's own confirmation.
 | `check [app]` | Report available updates, download nothing |
 | `update [app]` | Download, build and install anything newer |
 | `remove <app>` | Stop tracking an app (leaves it installed) |
+| `timer enable` | Check after login and every 6 hours, with a desktop notification for new versions |
 
 `pacdeb help <command>` shows every option.
 

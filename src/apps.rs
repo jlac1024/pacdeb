@@ -468,7 +468,9 @@ pub fn status(latest: &Latest, state: Option<&AppState>) -> Status {
     Status::Manual
 }
 
-pub fn check(name: Option<&str>) -> Result<()> {
+/// `notify` sends a desktop notification when the updates found differ from the ones
+/// last notified about (used by the timer).
+pub fn check(name: Option<&str>, notify: bool) -> Result<()> {
     let paths = Paths::from_env()?;
     let config = Config::load(&paths.config)?;
     let state = State::load(&paths.state)?;
@@ -484,6 +486,7 @@ pub fn check(name: Option<&str>) -> Result<()> {
     let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
     let total = names.len();
     let mut failed = 0;
+    let mut pending = Vec::new();
     for n in names {
         let app = &config.apps[n];
         let channel = config.channel(app);
@@ -497,15 +500,25 @@ pub fn check(name: Option<&str>) -> Result<()> {
             Ok(latest) => match status(&latest, state.apps.get(n)) {
                 Status::UpToDate(v) => println!("{label}  up to date: {v}{shown_channel}"),
                 Status::Newer { current: Some(c), latest } => {
-                    println!("{label}  {} {c} -> {latest}{shown_channel}", st.warn("update:"))
+                    println!("{label}  {} {c} -> {latest}{shown_channel}", st.warn("update:"));
+                    pending.push(format!("{n} {c} -> {latest}"));
                 }
                 Status::Newer { current: None, latest } => {
-                    println!("{label}  {} {latest}{shown_channel} (not built by pacdeb yet)", st.warn("available:"))
+                    println!("{label}  {} {latest}{shown_channel} (not built by pacdeb yet)", st.warn("available:"));
+                    pending.push(format!("{n} {latest}"));
                 }
-                Status::Changed(true) => println!("{label}  {} the download changed since the last build", st.warn("maybe:")),
+                Status::Changed(true) => {
+                    println!("{label}  {} the download changed since the last build", st.warn("maybe:"));
+                    pending.push(format!("{n} (new download)"));
+                }
                 Status::Changed(false) => println!("{label}  unchanged since the last build"),
                 Status::Manual => println!("{label}  manual source: update with 'pacdeb update {n} --file <deb>'"),
             },
+        }
+    }
+    if notify {
+        if let Err(e) = crate::notify::updates(&pending, &paths) {
+            println!("{} could not send a notification: {e}", st.warn("warning:"));
         }
     }
     if failed > 0 {

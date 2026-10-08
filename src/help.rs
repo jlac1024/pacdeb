@@ -17,6 +17,7 @@ Keeping apps updated:
   check [app]                   Report available updates, download nothing
   update [app]                  Download, build and install anything newer
   remove <app>                  Stop tracking an app (does not uninstall it)
+  timer enable|disable|status   Check on a schedule and notify about updates
 
 Run 'pacdeb help <command>' or 'pacdeb <command> --help' for details.
 
@@ -128,10 +129,14 @@ and the version pacman has installed.
 ";
 
 const CHECK: &str = "\
-Usage: pacdeb check [app]
+Usage: pacdeb check [app] [--notify]
 
 Asks each app's source (or just this app's) for its newest version and
 compares it with what pacdeb last built. Downloads no debs.
+
+Options:
+  --notify   Also send a desktop notification when the updates found differ
+             from the last ones notified about (the timer uses this)
 ";
 
 const UPDATE: &str = "\
@@ -157,6 +162,22 @@ Stops tracking an app. The installed package stays; remove it with
 'sudo pacman -R <package>' if you want it gone.
 ";
 
+const TIMER: &str = "\
+Usage: pacdeb timer enable|disable|status
+
+Runs 'pacdeb check --notify' 5 minutes after login and every 6 hours, using a
+systemd user timer in ~/.config/systemd/user (no root needed). When new versions
+come out you get a notification; its Update button opens a terminal running
+'pacdeb update'. Each set of updates is announced once.
+
+  enable    Turn scheduled checks on
+  disable   Turn them off and remove the timer
+  status    Show whether they are on and when the next check runs
+
+The terminal is $TERMINAL when set, otherwise the first one found (konsole,
+gnome-terminal, alacritty, kitty, foot and others).
+";
+
 /// The help page for a command, or None if there is no such command.
 pub fn page(command: &str) -> Option<&'static str> {
     Some(match command {
@@ -169,6 +190,7 @@ pub fn page(command: &str) -> Option<&'static str> {
         "check" => CHECK,
         "update" => UPDATE,
         "remove" => REMOVE,
+        "timer" => TIMER,
         _ => return None,
     })
 }
@@ -177,7 +199,7 @@ pub fn page(command: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove"];
+    const COMMANDS: &[&str] = &["inspect", "convert", "install", "add", "set", "list", "check", "update", "remove", "timer"];
 
     #[test]
     fn every_command_has_a_page_in_the_overview() {
