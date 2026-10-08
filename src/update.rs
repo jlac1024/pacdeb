@@ -344,9 +344,12 @@ pub fn install_name(spec: &str, direct: bool) -> Result<()> {
         }
         return install_app(name, direct);
     }
-    if only.is_none() && crate::registry::presets().contains_key(name) {
-        crate::apps::add_with(name, &crate::apps::Flags::default(), false)?;
-        return install_app(name, direct);
+    if let Some(preset) = only.is_none().then(|| crate::registry::preset_for(name)).flatten() {
+        if config.apps.contains_key(&preset) {
+            return install_app(&preset, direct);
+        }
+        crate::apps::add_with(&preset, &crate::apps::Flags::default(), false)?;
+        return install_app(&preset, direct);
     }
     let (mut all, failed) = crate::aptrepos::all_packages(&config, &paths);
     if let Some(r) = only {
