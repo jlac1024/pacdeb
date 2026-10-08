@@ -164,7 +164,8 @@ fn show_about(window: &adw::ApplicationWindow) {
 }
 
 /// Debug builds only: PACDEB_GUI_OPEN=add | edit:<app> | install:<package file> |
-/// browse:<app or repository> | repo:<repository> | remove:<app> | build:<deb> opens
+/// browse:<app or repository> | repo:<repository> | remove:<app> | build:<deb> |
+/// details:<package/repository> opens
 /// that dialog at startup, for checking it with PACDEB_GUI_SNAPSHOT.
 #[cfg(debug_assertions)]
 fn open_for_tests(ctx: &Rc<Ctx>) {
@@ -184,6 +185,7 @@ fn open_for_tests(ctx: &Rc<Ctx>) {
             }
         }
         Some(("repo", name)) => repo_dialog::open(ctx, name),
+        Some(("details", spec)) => search_page::show_details(ctx, spec),
         None if what == "about" => show_about(&ctx.window),
         Some(("build", deb)) => run::cli_and_install(ctx, "Building", &["convert", "--direct", "--out", "build/sandbox/out", deb]),
         Some(("remove", app)) => {

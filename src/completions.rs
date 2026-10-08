@@ -19,6 +19,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("untrack", "Stop tracking an app, keep it installed"),
     ("accept", "Hide an app's reviewed warnings"),
     ("search", "Search the saved apt repositories"),
+    ("show", "Show a package's details"),
     ("list", "Show tracked apps"),
     ("add", "Track an app"),
     ("set", "Change a tracked app or the global channel"),
@@ -95,7 +96,7 @@ fn fish() -> String {
     }
     s.push_str(
         "\n# install: names (tracked, built in, from the saved repositories) and .deb files\n\
-         complete -c pacdeb -n '__pacdeb_after install' -a '(__pacdeb_names installable)'\n\
+         complete -c pacdeb -n '__pacdeb_after install; or __pacdeb_after show' -a '(__pacdeb_names installable)'\n\
          complete -c pacdeb -n '__pacdeb_after install' -a '(__fish_complete_suffix .deb)'\n\
          complete -c pacdeb -n '__pacdeb_after install' -l direct -d 'Write the package directly instead of running makepkg'\n\
          complete -c pacdeb -n '__pacdeb_after inspect; or __pacdeb_after convert' -a '(__fish_complete_suffix .deb)'\n\
@@ -155,6 +156,7 @@ _pacdeb() {
     case $cmd in
         install)
             if [[ $cur == -* ]]; then words="--direct"; else words=$(_pacdeb_names installable); debs=1; fi ;;
+        show) words=$(_pacdeb_names installable) ;;
         inspect) debs=1 ;;
         convert)
             if [[ $cur == -* ]]; then words="--dry-run --direct --out"; else debs=1; fi ;;
@@ -203,6 +205,7 @@ fn zsh() -> String {
          \x20 if (( CURRENT == 2 )); then\n    _describe 'command' cmds\n    return\n  fi\n\
          \x20 case $words[2] in\n\
          \x20   install) compadd -- ${{(f)\"$(_pacdeb_names installable)\"}}; _files -g '*.deb' ;;\n\
+         \x20   show) compadd -- ${{(f)\"$(_pacdeb_names installable)\"}} ;;\n\
          \x20   inspect|convert) _files -g '*.deb' ;;\n\
          \x20   remove|untrack|accept|check|set|upgrade) compadd -- ${{(f)\"$(_pacdeb_names apps)\"}} ;;\n\
          \x20   list) compadd -- --upgradable ;;\n\

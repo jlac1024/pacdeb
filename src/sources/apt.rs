@@ -87,6 +87,28 @@ pub fn pick(index: &str, package: &str, arch: &str) -> Result<Option<Candidate>>
     Ok(best.map(|(_, c)| c))
 }
 
+/// The newest entry for `package` (for `arch` or arch independent) in an index: its
+/// version and the whole paragraph.
+pub fn details(index: &str, package: &str, arch: &str) -> Result<Option<(String, String)>> {
+    let mut best: Option<(DebVersion, String, String)> = None;
+    for para in paragraphs(index) {
+        let c = Control::parse(&para).context("the repository's package index")?;
+        if c.get("Package") != Some(package) || !matches!(c.get("Architecture"), Some(a) if a == arch || a == "all") {
+            continue;
+        }
+        let Some(version) = c.get("Version") else {
+            continue;
+        };
+        let Ok(parsed) = DebVersion::parse(version) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(b, _, _)| parsed > *b) {
+            best = Some((parsed, version.to_string(), para.clone()));
+        }
+    }
+    Ok(best.map(|(_, v, p)| (v, p)))
+}
+
 /// One package in a repository's index, for browsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
@@ -152,6 +174,15 @@ pub fn host_arch() -> &'static str {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn finds_the_newest_entry() {
+        let index = "Package: a\nVersion: 1.0\nArchitecture: amd64\nHomepage: one\n\nPackage: a\nVersion: 1.10\nArchitecture: amd64\nHomepage: two\n\nPackage: a\nVersion: 9.0\nArchitecture: arm64\n";
+        let (v, p) = details(index, "a", "amd64").unwrap().unwrap();
+        assert_eq!(v, "1.10");
+        assert!(p.contains("Homepage: two"));
+        assert_eq!(details(index, "b", "amd64").unwrap(), None);
+    }
 
     #[test]
     fn lists_every_package_once() {

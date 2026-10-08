@@ -67,6 +67,7 @@ around them, linking both into `~/.local/bin`. `packaging/PKGBUILD` is the recip
 | `install <name>` | Installs a tracked app, or the newest package of that name in your saved apt repositories and starts tracking it. `name/repository` picks the repository. |
 | `install <file.deb>` | Converts and installs a deb you downloaded. |
 | `search <words>` | Searches the packages in your saved apt repositories. |
+| `show <name>` | Shows a package's details, and what its dependencies become on Arch, before you install it. |
 | `list [--upgradable]` | Shows tracked apps with their built and installed versions. |
 | `remove <app>...` | Uninstalls with `sudo pacman -R` and stops tracking. |
 | `untrack <app>` | Stops tracking an app but leaves it installed. |
