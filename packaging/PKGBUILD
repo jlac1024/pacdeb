@@ -3,6 +3,7 @@
 #
 # Builds pacdeb from this source folder. install.sh in the folder above runs it; by hand:
 #   cd packaging && makepkg -f && sudo pacman -U pacdeb-*.pkg.tar.zst
+# release/PKGBUILD builds a tagged release from GitHub instead (and is the AUR package).
 
 pkgname=pacdeb
 pkgver=0.3.0
@@ -39,30 +40,5 @@ check() {
 }
 
 package() {
-  local bin="$_root/deploy"
-  install -Dm755 "$bin/pacdeb" "$pkgdir/usr/bin/pacdeb"
-  install -Dm755 "$bin/pacdeb-gui" "$pkgdir/usr/bin/pacdeb-gui"
-  install -Dm755 "$_root/setup.sh" "$pkgdir/usr/bin/pacdeb-setup"
-
-  install -d "$pkgdir/usr/share/fish/vendor_completions.d" "$pkgdir/usr/share/bash-completion/completions" "$pkgdir/usr/share/zsh/site-functions"
-  "$bin/pacdeb" completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/pacdeb.fish"
-  "$bin/pacdeb" completions bash > "$pkgdir/usr/share/bash-completion/completions/pacdeb"
-  "$bin/pacdeb" completions zsh > "$pkgdir/usr/share/zsh/site-functions/_pacdeb"
-
-  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/pacdeb.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=pacdeb
-GenericName=Debian Package Converter
-Comment=Install .deb apps as pacman packages and keep them updated
-Exec=pacdeb-gui %f
-Icon=system-software-install
-Terminal=false
-Categories=System;Settings;PackageManager;
-MimeType=application/vnd.debian.binary-package;application/x-deb;
-Keywords=deb;debian;package;install;update;
-EOF
-
-  install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/pacdeb/LICENSE"
-  install -Dm644 "$_root/README.md" "$pkgdir/usr/share/doc/pacdeb/README.md"
+  "$_root/packaging/package.sh" "$_root/deploy" "$_root" "$pkgdir"
 }

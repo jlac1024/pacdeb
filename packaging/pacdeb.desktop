@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=pacdeb
+GenericName=Debian Package Converter
+Comment=Install .deb apps as pacman packages and keep them updated
+Exec=pacdeb-gui %f
+Icon=system-software-install
+Terminal=false
+Categories=System;Settings;PackageManager;
+MimeType=application/vnd.debian.binary-package;application/x-deb;
+Keywords=deb;debian;package;install;update;
