@@ -67,6 +67,7 @@ mod tests {
     #[test]
     fn passes_all_packages_in_one_call() {
         let log = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox/test-install/log");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         let _ = std::fs::remove_file(&log);
         let pkgs = [PathBuf::from("/tmp/a-1.0-1-x86_64.pkg.tar.zst"), PathBuf::from("/tmp/b-2.0-1-x86_64.pkg.tar.zst")];
         // The stub reads where to log from its environment; a wrapper sets it without

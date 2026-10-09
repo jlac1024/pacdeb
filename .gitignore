@@ -5,3 +5,6 @@ references/
 packaging/src/
 packaging/pkg/
 packaging/*.pkg.tar.*
+packaging/release/*
+!packaging/release/PKGBUILD
+!packaging/release/.SRCINFO

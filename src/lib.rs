@@ -17,6 +17,10 @@ mod tests {
     fn the_package_recipe_has_this_version() {
         let pkgbuild = include_str!("../packaging/PKGBUILD");
         assert!(pkgbuild.contains(&format!("\npkgver={}\n", env!("CARGO_PKG_VERSION"))), "update pkgver in packaging/PKGBUILD");
+        let release = include_str!("../packaging/release/PKGBUILD");
+        assert!(release.contains(&format!("\npkgver={}\n", env!("CARGO_PKG_VERSION"))), "update pkgver in packaging/release/PKGBUILD");
+        let srcinfo = include_str!("../packaging/release/.SRCINFO");
+        assert!(srcinfo.contains(&format!("\tpkgver = {}\n", env!("CARGO_PKG_VERSION"))), "run 'makepkg --printsrcinfo > .SRCINFO' in packaging/release");
     }
 }
 

@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Maintainer: Jeff LaCombe (jlac1024) <jlac1024@users.noreply.github.com>
+#
+# Builds a pacdeb release from its tag on GitHub. This is the AUR package and the
+# recipe for the package attached to each GitHub release. Build release packages in a
+# clean chroot (extra-x86_64-build from devtools): makepkg records the installed
+# packages and folders of the machine it runs on in the package's .BUILDINFO.
+
+pkgname=pacdeb
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="Install Debian .deb packages as pacman packages and keep them updated, like apt"
+arch=('x86_64' 'aarch64')
+url="https://github.com/jlac1024/pacdeb"
+license=('AGPL-3.0-or-later')
+depends=(
+  'glibc' 'libgcc' 'xz'
+  'pacman'      # makepkg and repo-add
+  'sudo' 'gnupg' 'libnotify'
+  'gtk4' 'libadwaita' 'pango' 'glib2'
+)
+makedepends=('cargo' 'git')
+optdepends=('fakeroot: build packages with makepkg (without it pacdeb writes them itself)')
+# Release builds are already stripped, so no separate debug package. makepkg's LTO
+# flags make C code (in the ring crate) into objects Rust's linker cannot read.
+options=('!debug' '!lto')
+source=("git+https://github.com/jlac1024/pacdeb.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo build --frozen --release --features gui
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo test --frozen --release
+}
+
+package() {
+  cd "$pkgname"
+  packaging/package.sh target/release . "$pkgdir"
+}
