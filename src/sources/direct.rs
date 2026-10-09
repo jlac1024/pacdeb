@@ -114,10 +114,6 @@ pub fn highest_match(text: &str, pattern: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn proton() -> String {
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sources/proton-version.json")).unwrap()
-    }
-
     fn spec(channel: &str) -> (String, String, String) {
         (
             format!("Releases[CategoryName={channel}].Version"),
@@ -127,14 +123,14 @@ mod tests {
     }
 
     #[test]
-    fn reads_proton_channels() {
+    fn reads_feed_channels() {
         let cases = [("Stable", "1.14.0"), ("EarlyAccess", "1.15.0"), ("Alpha", "1.15.1")];
         for (channel, want) in cases {
             let (v, u, c) = spec(channel);
             let s = FeedSpec { url: None, version_json: Some(&v), version_pattern: None, version_regex: None, url_json: Some(&u), checksum_json: Some(&c) };
-            let l = from_feed(&proton(), &s).unwrap();
+            let l = from_feed(&crate::testdata::feed(), &s).unwrap();
             assert_eq!(l.version.as_deref(), Some(want), "{channel}");
-            assert_eq!(l.url.unwrap(), format!("https://proton.me/download/mail/linux/{want}/ProtonMail-desktop-beta.deb"));
+            assert_eq!(l.url.unwrap(), format!("https://example.com/app/{want}/app.deb"));
             assert!(matches!(l.checksum, Some(Checksum::Sha512(_))), "{channel}");
         }
     }

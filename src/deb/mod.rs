@@ -246,7 +246,7 @@ mod tests {
         }
     }
 
-    /// Opens every deb Jeff put in references/debs. Ignored by default because those
+    /// Opens every deb in references/debs. Ignored by default because those
     /// files are large; run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "reads the large sample debs in references/debs"]

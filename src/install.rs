@@ -61,7 +61,7 @@ mod tests {
     use std::path::Path;
 
     fn stub() -> String {
-        format!("{}/tests/fixtures/fake-install.sh", env!("CARGO_MANIFEST_DIR"))
+        format!("sh {}", crate::testdata::install_stub().display())
     }
 
     #[test]

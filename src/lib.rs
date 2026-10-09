@@ -47,6 +47,8 @@ pub mod repo;
 pub mod show;
 pub mod sources;
 pub mod style;
+#[cfg(test)]
+pub mod testdata;
 pub mod timer;
 pub mod translate;
 pub mod update;

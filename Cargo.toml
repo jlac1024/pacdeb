@@ -4,6 +4,8 @@ version = "0.3.0"
 edition = "2024"
 description = "Repackage Debian .deb files as pacman packages and keep them updated"
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/jlac1024/pacdeb"
+homepage = "https://github.com/jlac1024/pacdeb"
 publish = false
 
 [dependencies]

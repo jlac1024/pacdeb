@@ -59,15 +59,11 @@ mod tests {
         }
     }
 
-    fn fixture() -> String {
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sources/github-releases.json")).unwrap()
-    }
-
     #[test]
     fn picks_the_newest_matching_asset() {
-        let l = pick(&fixture(), "obsidian_*_amd64.deb", false).unwrap();
+        let l = pick(crate::testdata::GITHUB_RELEASES, "app_*_amd64.deb", false).unwrap();
         assert_eq!(l.version.as_deref(), Some("1.14.4"));
-        assert_eq!(l.url.as_deref(), Some("https://github.com/obsidianmd/obsidian-releases/releases/download/v1.14.4/obsidian_1.14.4_amd64.deb"));
+        assert_eq!(l.url.as_deref(), Some("https://github.com/example/app/releases/download/v1.14.4/app_1.14.4_amd64.deb"));
         assert_eq!(l.checksum, Checksum::from_hex("85b10dcba6edfc1c0460a6d18260cf31c30447a444bd858a6440b9c9c8806d25"));
     }
 

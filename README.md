@@ -25,9 +25,9 @@ There is also an app, **pacdeb-gui**, that does the same with a window.
 
 ## Getting started
 
-From the project folder:
-
 ```
+git clone https://github.com/jlac1024/pacdeb
+cd pacdeb
 sudo ./install.sh
 ```
 
