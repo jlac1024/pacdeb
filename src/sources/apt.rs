@@ -173,7 +173,6 @@ pub fn host_arch() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn finds_the_newest_entry() {
@@ -196,32 +195,30 @@ mod tests {
         assert_eq!(got.iter().map(|l| (l.name.as_str(), l.version.as_str(), l.summary.as_str())).collect::<Vec<_>>(), want);
     }
 
-    fn fixture(name: &str) -> Vec<u8> {
-        std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sources").join(name)).unwrap()
-    }
-
-    /// The signed part of the fixture InRelease, without gpg.
+    /// The signed part of the sample InRelease, without gpg.
     fn release_text() -> String {
-        let text = String::from_utf8(fixture("example-InRelease")).unwrap();
+        let text = String::from_utf8(crate::testdata::apt_repo().inrelease.clone()).unwrap();
         let body = text.split_once("\n\n").unwrap().1;
         body.split("-----BEGIN PGP SIGNATURE-----").next().unwrap().to_string()
     }
 
     #[test]
-    fn finds_and_reads_the_example_index() {
+    fn finds_and_reads_the_index() {
+        let repo = crate::testdata::apt_repo();
         let file = index_file(&release_text(), "main", "amd64").unwrap();
         assert_eq!(file.path, "main/binary-amd64/Packages.gz");
-        assert_eq!(file.size, 6306);
-        let index = read_index(&file, &fixture("example-Packages.gz")).unwrap();
+        assert_eq!(file.size as usize, repo.packages_gz.len());
+        let index = read_index(&file, &repo.packages_gz).unwrap();
         let c = pick(&index, "example-app", "amd64").unwrap().unwrap();
-        assert!(c.filename.starts_with("pool/main/e/example-app/example-app_"), "{c:?}");
-        assert!(c.filename.ends_with("_amd64.deb"), "{c:?}");
+        assert_eq!(c.filename, "pool/main/e/example-app/example-app_1.10-1_amd64.deb");
         assert_eq!(c.sha256.as_ref().map(String::len), Some(64));
-        // Every other listed version is lower.
+        // Every other listed version of it is lower.
         let newest = DebVersion::parse(&c.version).unwrap();
         for para in paragraphs(&index) {
-            let v = Control::parse(&para).unwrap().get("Version").map(|v| DebVersion::parse(v).unwrap());
-            assert!(v.is_none_or(|v| v <= newest));
+            let control = Control::parse(&para).unwrap();
+            if control.get("Package") == Some("example-app") {
+                assert!(DebVersion::parse(control.get("Version").unwrap()).unwrap() <= newest);
+            }
         }
         assert_eq!(pick(&index, "not-there", "amd64").unwrap(), None);
     }
@@ -229,7 +226,7 @@ mod tests {
     #[test]
     fn refuses_a_tampered_index() {
         let file = index_file(&release_text(), "main", "amd64").unwrap();
-        let mut raw = fixture("example-Packages.gz");
+        let mut raw = crate::testdata::apt_repo().packages_gz.clone();
         raw[100] ^= 1;
         assert!(read_index(&file, &raw).unwrap_err().to_string().contains("does not match the signed Release"));
         assert!(index_file(&release_text(), "main", "s390x").is_err());

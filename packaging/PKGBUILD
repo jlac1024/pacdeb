@@ -9,6 +9,7 @@ pkgver=0.3.0
 pkgrel=1
 pkgdesc="Install Debian .deb packages as pacman packages and keep them updated, like apt"
 arch=('x86_64' 'aarch64')
+url="https://github.com/jlac1024/pacdeb"
 license=('AGPL-3.0-or-later')
 depends=(
   'glibc' 'libgcc' 'xz'

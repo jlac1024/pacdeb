@@ -215,7 +215,7 @@ Usage: pacdeb remove <app>...
 
 Like 'apt remove': uninstalls the apps with 'sudo pacman -R' (pacman lists what
 it removes and asks first), then stops tracking them. If pacman does not remove
-them, nothing changes. An app's package name works too (example-app-deb).
+them, nothing changes. An app's package name works too (signal-desktop-deb).
 Apps that are not installed are only untracked.
 
 To stop tracking an app but keep it installed, use 'pacdeb untrack <app>'.

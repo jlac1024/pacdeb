@@ -203,10 +203,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn fixture(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sources").join(name)
-    }
-
     fn home(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("build/sandbox/test-gpg").join(name)
     }
@@ -238,15 +234,17 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_example_key_fingerprint() {
-        let fprs = fingerprints(&fixture("example-key.asc"), &home("fpr")).unwrap();
-        assert_eq!(fprs, ["A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"]);
+    fn reads_a_key_fingerprint() {
+        let repo = crate::testdata::apt_repo();
+        let fprs = fingerprints(&repo.key, &home("fpr")).unwrap();
+        assert_eq!(fprs, [repo.fingerprint.clone()]);
     }
 
     #[test]
-    fn verifies_the_example_inrelease() {
-        let signed = fs::read(fixture("example-InRelease")).unwrap();
-        let text = verify_clearsigned(&signed, &fixture("example-key.asc"), &home("clear")).unwrap();
+    fn verifies_an_inrelease() {
+        let repo = crate::testdata::apt_repo();
+        let signed = repo.inrelease.clone();
+        let text = verify_clearsigned(&signed, &repo.key, &home("clear")).unwrap();
         let text = String::from_utf8(text).unwrap();
         assert!(text.contains("main/binary-amd64/Packages.gz"), "{text}");
         assert!(!text.contains("BEGIN PGP"), "{text}");
@@ -255,6 +253,6 @@ mod tests {
         let mut tampered = signed.clone();
         let at = String::from_utf8_lossy(&signed).find("binary-amd64").unwrap();
         tampered[at] = b'B';
-        assert!(verify_clearsigned(&tampered, &fixture("example-key.asc"), &home("tamper")).is_err());
+        assert!(verify_clearsigned(&tampered, &repo.key, &home("tamper")).is_err());
     }
 }

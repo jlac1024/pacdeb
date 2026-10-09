@@ -174,7 +174,7 @@ mod tests {
             ("s/[^0-9]//g", false, "product_logo_256.png", Some("256")),
             ("s|pkill|/usr/bin/pkill|g", false, "ExecStop=pkill -f x; pkill y", Some("ExecStop=/usr/bin/pkill -f x; /usr/bin/pkill y")),
             ("s/a/b/", false, "aaa", Some("baa")),
-            ("s/^/unix-user:/", false, "jeff", Some("unix-user:jeff")),
+            ("s/^/unix-user:/", false, "alice", Some("unix-user:alice")),
             ("s/\\(.*\\)\\.png/\\1/", false, "icon.png", Some("icon")),
             ("s/(x)+/[&]/g", false, "(x)+ xx", Some("[(x)+] xx")),
             ("s/(x)+/[&]/g", true, "(x)+ xx", Some("([x])+ [xx]")),

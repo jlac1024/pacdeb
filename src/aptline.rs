@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn suggests_names() {
         let cases = [
-            ("https://apt.example.com/app/stable", "example"),
+            ("https://downloads.vendor.io/app/apt/stable", "vendor"),
             ("https://packages.microsoft.com/repos/code", "microsoft"),
             ("https://apt.example.org/", "example"),
             ("https://repo.steampowered.com/steam/", "steampowered"),

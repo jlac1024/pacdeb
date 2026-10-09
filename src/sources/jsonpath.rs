@@ -103,18 +103,17 @@ fn segment<'a>(s: &'a str, path: &str) -> Result<Segment<'a>> {
 mod tests {
     use super::*;
 
-    fn proton() -> Value {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sources/proton-version.json")).unwrap();
-        serde_json::from_str(&text).unwrap()
+    fn feed() -> Value {
+        serde_json::from_str(&crate::testdata::feed()).unwrap()
     }
 
     #[test]
-    fn reads_the_proton_feed() {
-        let v = proton();
+    fn reads_a_feed() {
+        let v = feed();
         let stable = get_string(&v, "Releases[CategoryName=Stable].Version").unwrap();
         assert_eq!(stable, "1.14.0");
         let url = get_string(&v, "Releases[CategoryName=EarlyAccess].File[Identifier=.deb (Ubuntu/Debian)].Url").unwrap();
-        assert_eq!(url, "https://proton.me/download/mail/linux/1.15.0/ProtonMail-desktop-beta.deb");
+        assert_eq!(url, "https://example.com/app/1.15.0/app.deb");
         let sum = get_string(&v, "Releases[CategoryName=EarlyAccess].File[Identifier=.deb (Ubuntu/Debian)].Sha512CheckSum").unwrap();
         assert!(sum.starts_with("9a0f3f4a1190b010"), "{sum}");
         assert_eq!(get_string(&v, "Releases[0].Version").unwrap(), "1.15.1");
@@ -122,7 +121,7 @@ mod tests {
 
     #[test]
     fn reports_what_is_missing() {
-        let v = proton();
+        let v = feed();
         let cases = [
             ("Nope", "feed has no 'Nope'"),
             ("Releases[CategoryName=Beta].Version", "no entry in 'Releases' has CategoryName = Beta"),
