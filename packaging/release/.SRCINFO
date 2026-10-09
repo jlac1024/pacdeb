@@ -1,0 +1,28 @@
+pkgbase = pacdeb
+	pkgdesc = Install Debian .deb packages as pacman packages and keep them updated, like apt
+	pkgver = 0.3.0
+	pkgrel = 1
+	url = https://github.com/jlac1024/pacdeb
+	arch = x86_64
+	arch = aarch64
+	license = AGPL-3.0-or-later
+	makedepends = cargo
+	makedepends = git
+	depends = glibc
+	depends = libgcc
+	depends = xz
+	depends = pacman
+	depends = sudo
+	depends = gnupg
+	depends = libnotify
+	depends = gtk4
+	depends = libadwaita
+	depends = pango
+	depends = glib2
+	optdepends = fakeroot: build packages with makepkg (without it pacdeb writes them itself)
+	options = !debug
+	options = !lto
+	source = git+https://github.com/jlac1024/pacdeb.git#tag=v0.3.0
+	sha256sums = SKIP
+
+pkgname = pacdeb
