@@ -7,7 +7,7 @@
 # packages and folders of the machine it runs on in the package's .BUILDINFO.
 
 pkgname=pacdeb
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="Install Debian .deb packages as pacman packages and keep them updated, like apt"
 arch=('x86_64' 'aarch64')

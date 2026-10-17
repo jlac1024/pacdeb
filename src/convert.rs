@@ -80,10 +80,24 @@ pub fn next_pkgrel(prev: Option<&AppState>, deb_version: &DebVersion, pkgver: &s
 /// Per app settings that change the package: name, provides, conflicts, deps.
 pub fn apply_overrides(p: &mut Package, app: &App) {
     if let Some(name) = &app.pkgname {
-        p.name = name.clone();
+        // A saved clash rename (demo-deb for demo) keeps standing in for the original,
+        // as it did on the build that picked the name.
+        let base = std::mem::replace(&mut p.name, name.clone());
+        if [format!("{base}-deb"), format!("{base}-pacdeb")].contains(name) {
+            for list in [&mut p.provides, &mut p.conflicts] {
+                if !list.contains(&base) {
+                    list.push(base.clone());
+                }
+            }
+        }
     }
-    p.provides.extend(app.provides.iter().cloned());
-    p.conflicts.extend(app.conflicts.iter().cloned());
+    for (list, extra) in [(&mut p.provides, &app.provides), (&mut p.conflicts, &app.conflicts)] {
+        for x in extra {
+            if !list.contains(x) {
+                list.push(x.clone());
+            }
+        }
+    }
     for d in &app.extra_depends {
         if !p.depends.contains(d) {
             p.depends.push(d.clone());
@@ -454,7 +468,7 @@ mod tests {
         apply_overrides(&mut p, &app);
         assert_eq!(p.name, "demo-deb");
         assert_eq!(p.provides, ["demo"]);
-        assert_eq!(p.conflicts, ["demo-bin"]);
+        assert_eq!(p.conflicts, ["demo", "demo-bin"]);
         assert_eq!(p.depends, ["nss", "gtk3"]);
         assert!(p.optdepends.is_empty());
     }
@@ -490,6 +504,15 @@ mod tests {
         let mut p = base.clone();
         assert_eq!(avoid_clash(&mut p, Some(&app), &TakenInAur(&["demo"]), Style::plain()), None);
         assert_eq!(p.name, "demo");
+
+        // Later builds use the saved rename and still provide and conflict with demo.
+        for (pkgname, stands_in) in [("demo-deb", true), ("demo-pacdeb", true), ("other", false)] {
+            app.pkgname = Some(pkgname.into());
+            let mut p = base.clone();
+            apply_overrides(&mut p, &app);
+            let want: &[String] = if stands_in { &["demo".to_string()] } else { &[] };
+            assert_eq!((p.name.as_str(), &p.provides[..], &p.conflicts[..]), (pkgname, want, want), "{pkgname}");
+        }
     }
 
     #[test]

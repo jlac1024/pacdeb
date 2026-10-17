@@ -78,19 +78,22 @@ Options:
 ";
 
 const INSTALL: &str = "\
-Usage: pacdeb install <name|name/repository|file.deb> [--direct]
+Usage: pacdeb install <name|name/repository|file.deb> [--rebuild] [--direct]
 
 Builds a package and installs it with 'sudo pacman -U', like 'apt install'.
 You see the sudo prompt and pacman's own confirmation.
 
   <name>             A tracked app: its newest version (reusing the last build
-                     when it is current). Otherwise the newest package of that
+                     when it is current; a manual app reinstalls its last build).
+                     Otherwise the newest package of that
                      name in any saved apt repository, which is then tracked.
   <name/repository>  That package from that saved apt repository.
   <file.deb>         Convert this file. If no tracked app has its package name, it
                      is tracked as a manual app so 'list' and 'upgrade' know it.
 
 Options:
+  --rebuild    Build a tracked app again instead of reusing the last build, e.g.
+               to pick up fixes in pacdeb. The same version gets the next pkgrel
   --direct     Write the package directly instead of running makepkg
 
 If pacman fails, the built package stays in the cache and its path is printed.
@@ -142,7 +145,8 @@ Sources:
   manual   No source; upgrade with 'pacdeb upgrade <app> --file <deb>'
 
 Options for any app:
-  --channel <name>           Release channel, filled in for {channel} in any value
+  --channel <name>           Release channel, filled in for {channel} in any value.
+                             Several, like Beta,Stable, follow whichever is newest
   --pkgname <name>           Package name to build instead of the deb's. Without it,
                              a name a repo or the AUR also uses gets a -deb suffix
   --provides a,b             Extra provides, e.g. to stand in for an AUR package
@@ -160,7 +164,9 @@ only the ones given change. '--source <type>' replaces the whole source.
 An empty value clears a setting, e.g. --channel ''.
 
 Without an app name, sets the global channel used by apps that have none of
-their own. Proton Mail's channels are Stable, EarlyAccess and Alpha.
+their own. Proton Mail's channels are Stable, EarlyAccess and Alpha. Channels
+an app's feed does not have are skipped, so EarlyAccess,Beta,Stable can serve
+apps whose feeds name their channels differently.
 ";
 
 const LIST: &str = "\

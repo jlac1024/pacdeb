@@ -154,14 +154,16 @@ fn convert(args: &[String]) -> ExitCode {
     finish(crate::convert::run(&crate::convert::Options { deb, dry_run, direct, out }))
 }
 
-const INSTALL_USAGE: &str = "usage: pacdeb install <file.deb|name> [--direct]";
+const INSTALL_USAGE: &str = "usage: pacdeb install <file.deb|name> [--rebuild] [--direct]";
 
 fn install(args: &[String]) -> ExitCode {
     let mut target = None;
     let mut direct = false;
+    let mut rebuild = false;
     for a in args {
         match a.as_str() {
             "--direct" => direct = true,
+            "--rebuild" => rebuild = true,
             s if s.starts_with('-') => return usage_error("install", &format!("unknown option '{s}'. {INSTALL_USAGE}")),
             s if target.is_none() => target = Some(PathBuf::from(s)),
             s => return usage_error("install", &format!("unexpected argument '{s}'. {INSTALL_USAGE}")),
@@ -174,7 +176,7 @@ fn install(args: &[String]) -> ExitCode {
     if target.exists() || target.extension().is_some_and(|e| e == "deb") {
         finish(crate::update::install_file(&target, direct))
     } else {
-        finish(crate::update::install_name(&target.to_string_lossy(), direct))
+        finish(crate::update::install_name(&target.to_string_lossy(), direct, rebuild))
     }
 }
 

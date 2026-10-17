@@ -324,7 +324,7 @@ fn record(state: &mut State, name: &str, built: &Built, latest: Option<&Latest>)
 /// `pacdeb install <name>`, like apt: a tracked app, or else the newest package of that
 /// name in the saved apt repositories, which is then tracked.
 /// As in apt, `name/repository` takes the package from that saved repository.
-pub fn install_name(spec: &str, direct: bool) -> Result<()> {
+pub fn install_name(spec: &str, direct: bool, rebuild: bool) -> Result<()> {
     let paths = Paths::from_env()?;
     let config = Config::load(&paths.config)?;
     let (name, only) = match spec.split_once('/') {
@@ -342,7 +342,7 @@ pub fn install_name(spec: &str, direct: bool) -> Result<()> {
                 bail!("{name} is tracked from {current}; move it with 'pacdeb set {name} --apt {r}' first");
             }
         }
-        return install_app(name, direct);
+        return install_app(name, direct, rebuild);
     }
     let (mut all, failed) = crate::aptrepos::all_packages(&config, &paths);
     if let Some(r) = only {
@@ -365,12 +365,13 @@ pub fn install_name(spec: &str, direct: bool) -> Result<()> {
     println!("Found {name} {} in {}{also}", found.package.version, found.repo);
     let flags = crate::apps::Flags { apt: Some(found.repo.clone()), ..Default::default() };
     crate::apps::add_with(name, &flags, false)?;
-    install_app(name, direct)
+    install_app(name, direct, rebuild)
 }
 
 /// `pacdeb install <app>`: the newest version from the app's source, built and installed
-/// even when it is already the version pacdeb built last.
-pub fn install_app(name: &str, direct: bool) -> Result<()> {
+/// even when it is already the version pacdeb built last. `rebuild` builds again
+/// instead of reusing the last package, so fixes in pacdeb itself reach the app.
+pub fn install_app(name: &str, direct: bool, rebuild: bool) -> Result<()> {
     let paths = Paths::from_env()?;
     let config = Config::load(&paths.config)?;
     let mut state = State::load(&paths.state)?;
@@ -378,13 +379,21 @@ pub fn install_app(name: &str, direct: bool) -> Result<()> {
         bail!("{name} is not tracked; add it with 'pacdeb add {name}', or pass a .deb file");
     };
     if let SourceConfig::Manual {} = app.source {
-        bail!("{name} has a manual source; install a deb file with 'pacdeb install <file.deb>'");
+        // No source to download from, so the last build is all there is to reinstall.
+        let last = state.apps.get(name).and_then(|s| s.packages.last()).map(PathBuf::from).filter(|p| p.exists());
+        return match last {
+            Some(p) if !rebuild => {
+                println!("{name}: reinstalling {}", p.display());
+                install::install(&[p])
+            }
+            _ => bail!("{name} has a manual source; rebuild it from its deb with 'pacdeb upgrade {name} --file <file.deb>'"),
+        };
     }
     let channel = config.channel(app);
     let latest = sources::latest(name, &app.source, channel.as_deref(), &config, &paths.config, &paths.cache)?;
     // Reuse the last build when it is already the newest version under the app's
     // current package name (it may have been renamed since).
-    let last = state.apps.get(name).and_then(|s| {
+    let last = state.apps.get(name).filter(|_| !rebuild).and_then(|s| {
         let pkgname = app.pkgname.as_deref()?;
         let file = s.packages.last().filter(|p| Path::new(p).exists())?;
         let file_name = Path::new(file).file_name()?.to_string_lossy();
@@ -398,6 +407,11 @@ pub fn install_app(name: &str, direct: bool) -> Result<()> {
         }
         None => {
             let deb = download(name, &latest, &paths)?;
+            // A rebuild of the version already built gets the next pkgrel, so pacman and
+            // the local repository see it as newer than the package it replaces.
+            if let Some(s) = state.apps.get_mut(name).filter(|s| rebuild && s.deb_version.is_some() && s.deb_version == latest.version) {
+                s.pkgrel += 1;
+            }
             build_and_record(name, app, &deb, Some(&latest), direct, &paths, &mut state)?.path
         }
     };

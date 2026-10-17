@@ -67,7 +67,10 @@ fn spawn(program: &Path, args: &[String], record: Option<&Path>) -> Receiver<Msg
     let mut cmd = Command::new(program);
     cmd.args(args).env("NO_COLOR", "1").env("PACDEB_PROGRESS", "lines").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(list) = record {
+        // After an upgrade replaces the running binary, Linux reports its path with
+        // " (deleted)" added; the new binary at the plain path handles --record too.
         let me = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_else(|_| "pacdeb-gui".into());
+        let me = me.strip_suffix(" (deleted)").unwrap_or(&me);
         cmd.env("PACDEB_INSTALL_CMD", format!("{me} --record {}", list.display()));
     }
     let shown = program.display().to_string();
