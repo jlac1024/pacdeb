@@ -55,6 +55,54 @@ pub fn from_feed(text: &str, spec: &FeedSpec) -> Result<Latest> {
     Ok(Latest { version: Some(version), url: Some(url), checksum, ..Latest::default() })
 }
 
+/// The channels a JSON feed offers for a `version_json` path with `{channel}` in a
+/// filter, like `Releases[CategoryName={channel}].Version`.
+pub fn channels(text: &str, version_json: &str) -> Option<Vec<String>> {
+    let json: Value = serde_json::from_str(text).ok()?;
+    jsonpath::filter_choices(&json, version_json, "{channel}")
+}
+
+/// JSON paths guessed from a feed's shape.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GuessedPaths {
+    pub version_json: String,
+    pub url_json: String,
+    pub checksum_json: Option<String>,
+}
+
+/// Recognizes feeds shaped like Proton's: a list of releases, each with a Version, a
+/// channel field, and a list of files with an Identifier that names the .deb.
+pub fn guess_paths(text: &str) -> Option<GuessedPaths> {
+    let json: Value = serde_json::from_str(text).ok()?;
+    let (list_key, releases) = json.as_object()?.iter().find_map(|(k, v)| {
+        let items = v.as_array()?;
+        items.first()?.get("Version")?.as_str()?;
+        Some((k.clone(), items))
+    })?;
+    let first = &releases[0];
+    let pick = match ["CategoryName", "Channel", "channel"].iter().find(|f| first.get(**f).is_some_and(Value::is_string)) {
+        Some(field) => format!("{list_key}[{field}={{channel}}]"),
+        None => format!("{list_key}[0]"),
+    };
+    let (files_key, deb) = ["File", "Files"].iter().find_map(|key| {
+        let file = first.get(*key)?.as_array()?.iter().find(|f| {
+            f.get("Url").is_some() && f.get("Identifier").and_then(Value::as_str).is_some_and(|i| i.contains(".deb"))
+        })?;
+        Some((*key, file))
+    })?;
+    let id = deb.get("Identifier")?.as_str()?;
+    let file = format!("{pick}.{files_key}[Identifier={id}]");
+    let sum_key = deb.as_object()?.keys().find(|k| {
+        let k = k.to_lowercase();
+        k.contains("checksum") || k.starts_with("sha256") || k.starts_with("sha512")
+    });
+    Some(GuessedPaths {
+        version_json: format!("{pick}.Version"),
+        url_json: format!("{file}.Url"),
+        checksum_json: sum_key.map(|k| format!("{file}.{k}")),
+    })
+}
+
 /// Every match of `re` in `text` gives a version (its first capture group, or the whole
 /// match); the highest by Debian ordering wins.
 pub fn highest_regex_match(text: &str, re: &str) -> Result<Option<String>> {
@@ -132,6 +180,26 @@ mod tests {
             assert_eq!(l.version.as_deref(), Some(want), "{channel}");
             assert_eq!(l.url.unwrap(), format!("https://example.com/app/{want}/app.deb"));
             assert!(matches!(l.checksum, Some(Checksum::Sha512(_))), "{channel}");
+        }
+    }
+
+    #[test]
+    fn guesses_paths_and_channels() {
+        let g = guess_paths(&crate::testdata::feed()).unwrap();
+        let (v, u, c) = spec("{channel}");
+        assert_eq!(g, GuessedPaths { version_json: v.clone(), url_json: u, checksum_json: Some(c) });
+        assert_eq!(channels(&crate::testdata::feed(), &v).unwrap(), ["Alpha", "EarlyAccess", "Stable"]);
+        let cases = [
+            ("not json", None),
+            (r#"{"Releases": []}"#, None),
+            (r#"{"Releases": [{"Version": "1.0", "File": [{"Identifier": ".rpm", "Url": "x"}]}]}"#, None),
+            (
+                r#"{"Releases": [{"Version": "1.0", "File": [{"Identifier": ".deb", "Url": "x"}]}]}"#,
+                Some(GuessedPaths { version_json: "Releases[0].Version".into(), url_json: "Releases[0].File[Identifier=.deb].Url".into(), checksum_json: None }),
+            ),
+        ];
+        for (text, want) in cases {
+            assert_eq!(guess_paths(text), want, "{text}");
         }
     }
 

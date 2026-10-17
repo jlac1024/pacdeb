@@ -15,6 +15,7 @@ use std::path::Path;
 use crate::error::{Result, bail};
 use crate::net::{self, Checksum, Head};
 use crate::registry::{Config, SourceConfig};
+use crate::version::DebVersion;
 
 pub use apt::host_arch;
 
@@ -76,42 +77,12 @@ pub fn apt_latest_in(indexes: &[(String, String)], repository: &str, repo: &crat
 /// never the deb itself. `config_dir` resolves apt key paths; `cache_dir` holds gpg's
 /// scratch home.
 pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config: &Config, config_dir: &Path, cache_dir: &Path) -> Result<Latest> {
-    let fill = |s: &str| -> Result<String> {
-        if !s.contains("{channel}") {
-            return Ok(s.to_string());
-        }
-        match channel {
-            Some(c) => Ok(s.replace("{channel}", c)),
-            None => bail!("{app} needs a channel; set one with 'pacdeb set {app} --channel <name>'"),
-        }
-    };
-    let fill_opt = |s: &Option<String>| -> Result<Option<String>> { s.as_deref().map(fill).transpose() };
-
     match source {
-        SourceConfig::Direct { url, feed, version_json, version_pattern, version_regex, url_json, checksum_json, .. } => {
-            let url = fill_opt(url)?;
-            let Some(feed) = fill_opt(feed)? else {
-                let Some(url) = url else {
-                    bail!("{app} has a direct source with neither url nor feed");
-                };
-                if url.contains("{version}") {
-                    bail!("{app}'s url has {{version}} but there is no feed to say which version");
-                }
-                let head = net::head(&url)?;
-                return Ok(Latest { url: Some(url), head: Some(head), ..Latest::default() });
-            };
-            let text = net::get_text(&feed, &[])?;
-            let (vj, vp, vr) = (fill_opt(version_json)?, fill_opt(version_pattern)?, fill_opt(version_regex)?);
-            let (uj, cj) = (fill_opt(url_json)?, fill_opt(checksum_json)?);
-            let spec = direct::FeedSpec {
-                url: url.as_deref(),
-                version_json: vj.as_deref(),
-                version_pattern: vp.as_deref(),
-                version_regex: vr.as_deref(),
-                url_json: uj.as_deref(),
-                checksum_json: cj.as_deref(),
-            };
-            direct::from_feed(&text, &spec)
+        SourceConfig::Direct { .. } => {
+            // "Beta,Stable" follows several channels: the newest version among them wins,
+            // and channels the feed does not have are skipped.
+            let list: Vec<&str> = channel.map(|c| c.split(',').map(str::trim).filter(|c| !c.is_empty()).collect()).unwrap_or_default();
+            direct_channels(app, source, &list, &mut Vec::new())
         }
         SourceConfig::Apt { repository, package } => {
             let Some(repo) = config.apt.get(repository) else {
@@ -141,6 +112,97 @@ pub fn latest(app: &str, source: &SourceConfig, channel: Option<&str>, config: &
         SourceConfig::Manual {} => Ok(Latest::default()),
     }
 }
+
+/// A direct source following the channels in `list`: the newest version wins, and
+/// channels that fail (usually ones the feed lacks) are skipped while one works.
+fn direct_channels(app: &str, source: &SourceConfig, list: &[&str], feeds: &mut Vec<(String, String)>) -> Result<Latest> {
+    if list.len() < 2 || !source.uses_channel() {
+        return direct_latest(app, source, list.first().copied(), feeds);
+    }
+    let mut best: Option<Latest> = None;
+    let mut errors = Vec::new();
+    for c in list {
+        match direct_latest(app, source, Some(c), feeds) {
+            Ok(l) => {
+                let newer = best.as_ref().is_none_or(|b| match (b.version.as_deref().map(DebVersion::parse), l.version.as_deref().map(DebVersion::parse)) {
+                    (Some(Ok(old)), Some(Ok(new))) => new > old,
+                    _ => false,
+                });
+                if newer {
+                    best = Some(l);
+                }
+            }
+            Err(e) => errors.push(format!("{c}: {e}")),
+        }
+    }
+    match best {
+        Some(l) => Ok(l),
+        None => bail!("{app}: none of the channels {} worked\n  {}", list.join(", "), errors.join("\n  ")),
+    }
+}
+
+/// A direct source for one channel. `feeds` keeps fetched feeds, so following several
+/// channels of the same feed downloads it once.
+fn direct_latest(app: &str, source: &SourceConfig, channel: Option<&str>, feeds: &mut Vec<(String, String)>) -> Result<Latest> {
+    let SourceConfig::Direct { url, feed, version_json, version_pattern, version_regex, url_json, checksum_json, .. } = source else {
+        bail!("{app} does not have a direct source");
+    };
+    let fill = |s: &str| -> Result<String> {
+        if !s.contains("{channel}") {
+            return Ok(s.to_string());
+        }
+        match channel {
+            Some(c) => Ok(s.replace("{channel}", c)),
+            None => bail!("{app} needs a channel; set one with 'pacdeb set {app} --channel <name>'"),
+        }
+    };
+    let fill_opt = |s: &Option<String>| -> Result<Option<String>> { s.as_deref().map(fill).transpose() };
+
+    let url = fill_opt(url)?;
+    let Some(feed) = fill_opt(feed)? else {
+        let Some(url) = url else {
+            bail!("{app} has a direct source with neither url nor feed");
+        };
+        if url.contains("{version}") {
+            bail!("{app}'s url has {{version}} but there is no feed to say which version");
+        }
+        let head = net::head(&url)?;
+        return Ok(Latest { url: Some(url), head: Some(head), ..Latest::default() });
+    };
+    let text = match feeds.iter().find(|(u, _)| *u == feed) {
+        Some((_, t)) => t.clone(),
+        None => {
+            let t = net::get_text(&feed, &[])?;
+            feeds.push((feed.clone(), t.clone()));
+            t
+        }
+    };
+    let (vj, vp, vr) = (fill_opt(version_json)?, fill_opt(version_pattern)?, fill_opt(version_regex)?);
+    let (uj, cj) = (fill_opt(url_json)?, fill_opt(checksum_json)?);
+    let spec = direct::FeedSpec {
+        url: url.as_deref(),
+        version_json: vj.as_deref(),
+        version_pattern: vp.as_deref(),
+        version_regex: vr.as_deref(),
+        url_json: uj.as_deref(),
+        checksum_json: cj.as_deref(),
+    };
+    direct::from_feed(&text, &spec).map_err(|e| {
+        // A channel the feed does not have is the usual mistake; say which ones it has.
+        let offered = version_json.as_deref().filter(|_| channel.is_some()).and_then(|vj| direct::channels(&text, vj)).filter(|c| !c.is_empty());
+        match offered {
+            Some(c) => crate::error::Error::new(format!("{e}; the feed's channels are {}", c.join(", "))),
+            None => e,
+        }
+    })
+}
+
+/// The channels a JSON feed offers, for a `version_json` path with `{channel}` in it.
+pub fn feed_channels(text: &str, version_json: &str) -> Option<Vec<String>> {
+    direct::channels(text, version_json)
+}
+
+pub use direct::{GuessedPaths, guess_paths};
 
 /// Shell style matching with `*` and `?`.
 pub fn glob_match(pattern: &str, name: &str) -> bool {
@@ -172,6 +234,39 @@ mod tests {
         ];
         for (p, n, want) in cases {
             assert_eq!(glob_match(p, n), want, "{p} vs {n}");
+        }
+    }
+
+    #[test]
+    fn follows_several_channels() {
+        let feed_url = "https://example.invalid/feed.json";
+        let src = SourceConfig::Direct {
+            url: None,
+            feed: Some(feed_url.into()),
+            version_json: Some("Releases[CategoryName={channel}].Version".into()),
+            version_pattern: None,
+            version_regex: None,
+            url_json: Some("Releases[CategoryName={channel}].File[Identifier=.deb (Ubuntu/Debian)].Url".into()),
+            checksum_json: None,
+            default_channel: None,
+        };
+        let cases: &[(&[&str], std::result::Result<&str, &str>)] = &[
+            (&["Stable"], Ok("1.14.0")),
+            (&["Stable", "EarlyAccess"], Ok("1.15.0")),
+            (&["EarlyAccess", "Stable"], Ok("1.15.0")),
+            (&["Beta", "Stable"], Ok("1.14.0")),
+            (&["Alpha", "Beta", "Stable"], Ok("1.15.1")),
+            (&["Beta"], Err("the feed's channels are Alpha, EarlyAccess, Stable")),
+            (&["Beta", "Nightly"], Err("none of the channels Beta, Nightly worked")),
+        ];
+        for (list, want) in cases {
+            let mut feeds = vec![(feed_url.to_string(), crate::testdata::feed())];
+            let got = direct_channels("demo", &src, list, &mut feeds);
+            match (got, want) {
+                (Ok(l), Ok(v)) => assert_eq!(l.version.as_deref(), Some(*v), "{list:?}"),
+                (Err(e), Err(msg)) => assert!(e.to_string().contains(msg), "{list:?}: {e}"),
+                (got, _) => panic!("{list:?}: unexpected {got:?}"),
+            }
         }
     }
 

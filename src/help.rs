@@ -142,7 +142,8 @@ Sources:
   manual   No source; upgrade with 'pacdeb upgrade <app> --file <deb>'
 
 Options for any app:
-  --channel <name>           Release channel, filled in for {channel} in any value
+  --channel <name>           Release channel, filled in for {channel} in any value.
+                             Several, like Beta,Stable, follow whichever is newest
   --pkgname <name>           Package name to build instead of the deb's. Without it,
                              a name a repo or the AUR also uses gets a -deb suffix
   --provides a,b             Extra provides, e.g. to stand in for an AUR package
@@ -160,7 +161,9 @@ only the ones given change. '--source <type>' replaces the whole source.
 An empty value clears a setting, e.g. --channel ''.
 
 Without an app name, sets the global channel used by apps that have none of
-their own. Proton Mail's channels are Stable, EarlyAccess and Alpha.
+their own. Proton Mail's channels are Stable, EarlyAccess and Alpha. Channels
+an app's feed does not have are skipped, so EarlyAccess,Beta,Stable can serve
+apps whose feeds name their channels differently.
 ";
 
 const LIST: &str = "\

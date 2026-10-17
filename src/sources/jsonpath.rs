@@ -50,6 +50,33 @@ pub fn get_string(root: &Value, path: &str) -> Result<String> {
     }
 }
 
+/// Every value a `[Field=<placeholder>]` filter in `path` could match: the distinct
+/// Field values in that list, in feed order. None when `path` has no such filter or
+/// the list is not there.
+pub fn filter_choices(root: &Value, path: &str, placeholder: &str) -> Option<Vec<String>> {
+    let segs = segments(path).ok()?;
+    let i = segs.iter().position(|s| s.filter.and_then(|f| f.split_once('=')).is_some_and(|(_, v)| v == placeholder))?;
+    let field = segs[i].filter?.split_once('=')?.0;
+    let mut prefix: Vec<String> = segs[..i]
+        .iter()
+        .map(|s| match s.filter {
+            Some(f) => format!("{}[{f}]", s.key),
+            None => s.key.to_string(),
+        })
+        .collect();
+    if !segs[i].key.is_empty() {
+        prefix.push(segs[i].key.to_string());
+    }
+    let list = if prefix.is_empty() { root } else { get(root, &prefix.join(".")).ok()? };
+    let mut out: Vec<String> = Vec::new();
+    for v in list.as_array()?.iter().filter_map(|item| item.get(field).and_then(scalar)) {
+        if !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    Some(out)
+}
+
 fn scalar(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
@@ -117,6 +144,24 @@ mod tests {
         let sum = get_string(&v, "Releases[CategoryName=EarlyAccess].File[Identifier=.deb (Ubuntu/Debian)].Sha512CheckSum").unwrap();
         assert!(sum.starts_with("9a0f3f4a1190b010"), "{sum}");
         assert_eq!(get_string(&v, "Releases[0].Version").unwrap(), "1.15.1");
+    }
+
+    #[test]
+    fn lists_filter_choices() {
+        let v = feed();
+        let all = Some(vec!["Alpha".to_string(), "EarlyAccess".into(), "Stable".into()]);
+        let cases = [
+            ("Releases[CategoryName={channel}].Version", all.clone()),
+            ("Releases[CategoryName={channel}].File[Identifier=.deb (Ubuntu/Debian)].Url", all),
+            ("Releases[CategoryName=Stable].Version", None),
+            ("Nope[CategoryName={channel}].Version", None),
+            ("Releases[Missing={channel}].Version", Some(vec![])),
+        ];
+        for (path, want) in cases {
+            assert_eq!(filter_choices(&v, path, "{channel}"), want, "{path}");
+        }
+        let top: Value = serde_json::from_str(r#"[{"ch": "a"}, {"ch": "b"}, {"ch": "a"}]"#).unwrap();
+        assert_eq!(filter_choices(&top, "[ch={channel}].v", "{channel}"), Some(vec!["a".to_string(), "b".into()]));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use adw::prelude::*;
 use gtk::glib;
 use pacdeb::paths::Paths;
 use pacdeb::registry::{App, Config, SourceConfig};
+use pacdeb::sources;
 
 use crate::{Ctx, run};
 
@@ -33,6 +34,9 @@ struct Form {
     deb_row: adw::ActionRow,
     deb_pick: gtk::Button,
     deb_file: RefCell<Option<PathBuf>>,
+    /// The channels the feed offers, as checkboxes that fill the channel field.
+    channels_row: adw::ActionRow,
+    channel_box: gtk::Box,
     /// What the fields held when the dialog opened, for an edit.
     before: BTreeMap<&'static str, String>,
     before_kind: Option<&'static str>,
@@ -53,6 +57,10 @@ impl Form {
         for (k, g) in &self.groups {
             g.set_visible(*k == kind);
         }
+    }
+
+    fn row(&self, flag: &str) -> &adw::EntryRow {
+        &self.fields.iter().find(|(f, _, _)| *f == flag).expect("a flag the form has").2
     }
 
     fn selected_apt(&self) -> Option<String> {
@@ -152,7 +160,7 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
     };
     page.add(&general);
     let options = adw::PreferencesGroup::builder().title("Options").description("Leave empty for the defaults").build();
-    for (flag, label) in [("--channel", "Channel, e.g. Stable"), ("--pkgname", "Package name (default: the deb's, -deb added on a clash)")] {
+    for (flag, label) in [("--channel", "Channel, e.g. Stable, or Beta,Stable for the newer of both"), ("--pkgname", "Package name (default: the deb's, -deb added on a clash)")] {
         let r = entry(label);
         options.add(&r);
         fields.push((flag, "", r));
@@ -189,6 +197,11 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
         feed.add_row(&r);
         fields.push((flag, "direct", r));
     }
+    // Channels sit above the folded feed settings, since they are the part people change.
+    let channel_box = gtk::Box::builder().spacing(12).valign(gtk::Align::Center).build();
+    let channels_row = adw::ActionRow::builder().title("Channels").visible(false).build();
+    channels_row.add_suffix(&channel_box);
+    direct.add(&channels_row);
     direct.add(&feed);
     page.add(&direct);
     groups.push(("direct", direct));
@@ -219,6 +232,8 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
         deb_row,
         deb_pick,
         deb_file: RefCell::new(None),
+        channels_row,
+        channel_box,
         before: BTreeMap::new(),
         before_kind: None,
         before_prerelease: false,
@@ -275,6 +290,68 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
     (form, page)
 }
 
+/// Reads the feed in the background. For a feed laid out like Proton's, empty JSON
+/// paths are filled in; then the feed's channels are offered as checkboxes.
+fn read_feed(ctx: &Rc<Ctx>, form: &Rc<Form>) {
+    let url = form.row("--feed").text().trim().to_string();
+    while let Some(c) = form.channel_box.first_child() {
+        form.channel_box.remove(&c);
+    }
+    if url.is_empty() || url.contains("{channel}") {
+        form.channels_row.set_visible(false);
+        return;
+    }
+    form.channels_row.set_visible(true);
+    form.channels_row.set_subtitle("Reading the feed...");
+    let (ctx, form) = (ctx.clone(), form.clone());
+    glib::spawn_future_local(async move {
+        let fetch_url = url.clone();
+        let fetched = gtk::gio::spawn_blocking(move || pacdeb::net::get_text(&fetch_url, &[]).map_err(|e| e.to_string())).await;
+        // A newer feed URL was entered while this one loaded.
+        if form.row("--feed").text().trim() != url {
+            return;
+        }
+        let text = match fetched {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                form.channels_row.set_subtitle(&glib::markup_escape_text(&format!("Could not read the feed: {e}")));
+                return;
+            }
+            Err(_) => return,
+        };
+        let empty = |flag: &str| form.row(flag).text().trim().is_empty();
+        if empty("--version-json") && empty("--version-regex") && empty("--version-pattern") {
+            if let Some(g) = sources::guess_paths(&text) {
+                form.row("--version-json").set_text(&g.version_json);
+                if empty("--url-json") && empty("--url") {
+                    form.row("--url-json").set_text(&g.url_json);
+                }
+                if let (Some(c), true) = (&g.checksum_json, empty("--checksum-json")) {
+                    form.row("--checksum-json").set_text(c);
+                }
+                ctx.toast("Filled in the version feed settings from the feed");
+            }
+        }
+        let offered = sources::feed_channels(&text, &form.row("--version-json").text()).unwrap_or_default();
+        if offered.is_empty() {
+            form.channels_row.set_visible(false);
+            return;
+        }
+        form.channels_row.set_subtitle("Tick one or more; pacdeb follows the newest of them");
+        let chosen: Vec<String> = form.row("--channel").text().split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
+        let boxes: Rc<Vec<(String, gtk::CheckButton)>> =
+            Rc::new(offered.iter().map(|c| (c.clone(), gtk::CheckButton::builder().label(c).active(chosen.contains(c)).build())).collect());
+        for (_, b) in boxes.iter() {
+            form.channel_box.append(b);
+            let (form, boxes) = (form.clone(), boxes.clone());
+            b.connect_toggled(move |_| {
+                let picked: Vec<&str> = boxes.iter().filter(|(_, b)| b.is_active()).map(|(c, _)| c.as_str()).collect();
+                form.row("--channel").set_text(&picked.join(","));
+            });
+        }
+    });
+}
+
 /// A starting app name from a deb file name: "proton-pass_1.2.3_amd64.deb" gives
 /// "proton-pass", "ProtonPass.deb" gives "protonpass".
 fn name_from_file(path: &std::path::Path) -> String {
@@ -308,6 +385,15 @@ pub fn open(ctx: &Rc<Ctx>, editing: Option<&str>) {
         let form = form.clone();
         move |_| form.show_groups()
     });
+    let feed_row = form.row("--feed");
+    feed_row.set_show_apply_button(true);
+    feed_row.connect_apply({
+        let (ctx, form) = (ctx.clone(), form.clone());
+        move |_| read_feed(&ctx, &form)
+    });
+    if !feed_row.text().trim().is_empty() {
+        read_feed(ctx, &form);
+    }
     form.deb_pick.connect_clicked({
         let (ctx, form) = (ctx.clone(), form.clone());
         move |_| {
