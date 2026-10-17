@@ -3,10 +3,13 @@
 //! arguments, so the command line tool checks and saves everything (including
 //! fetching and checking signing keys) the same way it does in a terminal.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::glib;
 use pacdeb::paths::Paths;
 use pacdeb::registry::{App, Config, SourceConfig};
 
@@ -26,6 +29,10 @@ struct Form {
     apt_names: Vec<String>,
     before_apt: Option<String>,
     groups: Vec<(&'static str, adw::PreferencesGroup)>,
+    /// For a new manual app: the .deb to build right after adding it.
+    deb_row: adw::ActionRow,
+    deb_pick: gtk::Button,
+    deb_file: RefCell<Option<PathBuf>>,
     /// What the fields held when the dialog opened, for an edit.
     before: BTreeMap<&'static str, String>,
     before_kind: Option<&'static str>,
@@ -150,20 +157,6 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
         options.add(&r);
         fields.push((flag, "", r));
     }
-    group(
-        "direct",
-        "Direct download",
-        &[
-            ("--url", "Download URL (may contain {version})"),
-            ("--feed", "Feed URL that names the newest version"),
-            ("--version-json", "Version in a JSON feed, e.g. Release.Version"),
-            ("--version-regex", "Version regex for a text feed"),
-            ("--version-pattern", "Version pattern, e.g. app_{version}_amd64.deb"),
-            ("--url-json", "Download URL in a JSON feed"),
-            ("--checksum-json", "Checksum in a JSON feed"),
-        ],
-        &mut fields,
-    );
     let apt_names: Vec<String> = editing.map(|(_, _, c)| c.apt.keys().cloned().collect()).unwrap_or_else(saved_repositories);
     let apt_labels: Vec<&str> = apt_names.iter().map(String::as_str).collect();
     let apt_repo = adw::ComboRow::builder().title("Repository").model(&gtk::StringList::new(&apt_labels)).build();
@@ -173,9 +166,63 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
     let gh = group("github", "GitHub releases", &[("--repo", "Repository, owner/name"), ("--asset", "Asset pattern, e.g. *_amd64.deb")], &mut fields);
     let prerelease = adw::SwitchRow::builder().title("Include prereleases").build();
     gh.add(&prerelease);
+
+    // Most direct downloads only need the URL: without a feed, pacdeb downloads the
+    // file and compares its version. The feed settings stay folded away.
+    let direct = adw::PreferencesGroup::builder()
+        .title("Direct download")
+        .description("Only the download URL is needed. Without a version feed, pacdeb downloads the file to see if it changed.")
+        .build();
+    let url = entry("Download URL (may contain {version})");
+    direct.add(&url);
+    fields.push(("--url", "direct", url));
+    let feed = adw::ExpanderRow::builder().title("Version feed").subtitle("Optional: lets pacdeb see new versions without downloading").build();
+    for (flag, label) in [
+        ("--feed", "Feed URL that names the newest version"),
+        ("--version-json", "Version in a JSON feed, e.g. Release.Version"),
+        ("--version-regex", "Version regex for a text feed"),
+        ("--version-pattern", "Version pattern, e.g. app_{version}_amd64.deb"),
+        ("--url-json", "Download URL in a JSON feed"),
+        ("--checksum-json", "Checksum in a JSON feed"),
+    ] {
+        let r = entry(label);
+        feed.add_row(&r);
+        fields.push((flag, "direct", r));
+    }
+    direct.add(&feed);
+    page.add(&direct);
+    groups.push(("direct", direct));
+
+    let manual = adw::PreferencesGroup::builder()
+        .title("Manual")
+        .description("pacdeb never downloads this app. Give it the .deb you downloaded; for later versions use the open button on the Apps page.")
+        .build();
+    let deb_row = adw::ActionRow::builder().title("Package file").subtitle("No file chosen").build();
+    let deb_pick = gtk::Button::builder().label("Choose").valign(gtk::Align::Center).build();
+    deb_row.add_suffix(&deb_pick);
+    deb_row.set_activatable_widget(Some(&deb_pick));
+    manual.add(&deb_row);
+    page.add(&manual);
+    groups.push(("manual", manual.clone()));
     page.add(&options);
 
-    let mut form = Form { name, kind, kinds, fields, prerelease, apt_repo, apt_names, before_apt: None, groups, before: BTreeMap::new(), before_kind: None, before_prerelease: false };
+    let mut form = Form {
+        name,
+        kind,
+        kinds,
+        fields,
+        prerelease,
+        apt_repo,
+        apt_names,
+        before_apt: None,
+        groups,
+        deb_row,
+        deb_pick,
+        deb_file: RefCell::new(None),
+        before: BTreeMap::new(),
+        before_kind: None,
+        before_prerelease: false,
+    };
     if let Some((app_name, app, config)) = editing {
         form.name.set_text(app_name);
         form.name.set_editable(false);
@@ -214,6 +261,11 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
         if let Some(c) = shown {
             form.fields[0].2.set_title(&format!("Channel (now {c} from the global setting or default)"));
         }
+        let feed_flags = ["--feed", "--version-json", "--version-regex", "--version-pattern", "--url-json", "--checksum-json"];
+        feed.set_expanded(feed_flags.iter().any(|f| before.get(f).is_some_and(|v| !v.is_empty())));
+        // A tracked manual app gets new files from the Apps page, not from here.
+        form.deb_row.set_visible(false);
+        manual.set_description(Some("pacdeb never downloads this app. Use the open button on the Apps page to build it from a newer .deb."));
         form.before = before;
         form.before_kind = form.kinds.iter().copied().find(|k| *k == kind_key);
         if let Some(i) = form.kinds.iter().position(|k| *k == kind_key) {
@@ -221,6 +273,13 @@ fn build_form(editing: Option<(&str, &App, &Config)>) -> (Form, adw::Preferences
         }
     }
     (form, page)
+}
+
+/// A starting app name from a deb file name: "proton-pass_1.2.3_amd64.deb" gives
+/// "proton-pass", "ProtonPass.deb" gives "protonpass".
+fn name_from_file(path: &std::path::Path) -> String {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    stem.split('_').next().unwrap_or("").to_lowercase()
 }
 
 fn saved_repositories() -> Vec<String> {
@@ -248,6 +307,19 @@ pub fn open(ctx: &Rc<Ctx>, editing: Option<&str>) {
     form.kind.connect_selected_notify({
         let form = form.clone();
         move |_| form.show_groups()
+    });
+    form.deb_pick.connect_clicked({
+        let (ctx, form) = (ctx.clone(), form.clone());
+        move |_| {
+            let form = form.clone();
+            crate::convert_page::pick_deb(&ctx, move |path| {
+                form.deb_row.set_subtitle(&glib::markup_escape_text(&path.display().to_string()));
+                if form.name.text().trim().is_empty() {
+                    form.name.set_text(&name_from_file(&path));
+                }
+                *form.deb_file.borrow_mut() = Some(path);
+            });
+        }
     });
 
     let cancel = gtk::Button::with_label("Cancel");
@@ -280,13 +352,18 @@ pub fn open(ctx: &Rc<Ctx>, editing: Option<&str>) {
                     return;
                 }
             };
+            let new_manual = editing.is_none() && form.kind() == "manual";
+            let build = form.deb_file.borrow().clone().filter(|_| new_manual).map(|f| (args[1].clone(), f.display().to_string()));
             let (ctx2, form_dialog) = (ctx.clone(), dialog.clone());
             run::logged(&ctx, "Saving", &run::cli(), &args, false, move |log, done| {
                 ctx2.refresh();
                 if done.ok {
                     log.close();
                     form_dialog.close();
-                    ctx2.toast(done.output.lines().find(|l| !l.trim().is_empty()).unwrap_or("Saved"));
+                    match &build {
+                        Some((name, file)) => run::cli_and_install(&ctx2, &format!("Building {name}"), &["upgrade", name, "--file", file]),
+                        None => ctx2.toast(done.output.lines().find(|l| !l.trim().is_empty()).unwrap_or("Saved")),
+                    }
                 }
             });
         }

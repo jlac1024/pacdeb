@@ -102,17 +102,23 @@ pub fn build(ctx: &Rc<Ctx>) -> (gtk::Widget, Rc<Page>) {
 }
 
 fn choose(ctx: &Rc<Ctx>, page: &Rc<Page>) {
+    let page = page.clone();
+    pick_deb(ctx, move |path| show(&page, path));
+}
+
+/// Asks for a .deb file and hands its path to `chosen`; nothing happens on cancel.
+pub fn pick_deb(ctx: &Rc<Ctx>, chosen: impl FnOnce(PathBuf) + 'static) {
     let filter = gtk::FileFilter::new();
     filter.set_name(Some("Debian packages"));
     filter.add_pattern("*.deb");
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     let dialog = gtk::FileDialog::builder().title("Open a .deb").filters(&filters).modal(true).build();
-    let (window, page) = (ctx.window.clone(), page.clone());
+    let window = ctx.window.clone();
     glib::spawn_future_local(async move {
         if let Ok(file) = dialog.open_future(Some(&window)).await {
             if let Some(path) = file.path() {
-                show(&page, path);
+                chosen(path);
             }
         }
     });

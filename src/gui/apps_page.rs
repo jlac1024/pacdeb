@@ -128,6 +128,17 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox) {
             b.connect_clicked(move |_| review_warnings(&ctx, &name, &unseen));
             row.add_suffix(&b);
         }
+        if app.source.kind() == "manual" {
+            let b = gtk::Button::builder().icon_name("document-open-symbolic").tooltip_text("Build from a .deb file").valign(gtk::Align::Center).css_classes(["flat"]).build();
+            let (ctx, name) = (ctx.clone(), name.clone());
+            b.connect_clicked(move |_| {
+                let (ctx2, name) = (ctx.clone(), name.clone());
+                crate::convert_page::pick_deb(&ctx, move |path| {
+                    run::cli_and_install(&ctx2, &format!("Building {name}"), &["upgrade", &name, "--file", &path.display().to_string()]);
+                });
+            });
+            row.add_suffix(&b);
+        }
         let edit = gtk::Button::builder().icon_name("document-edit-symbolic").tooltip_text("Edit").valign(gtk::Align::Center).css_classes(["flat"]).build();
         edit.connect_clicked({
             let (ctx, name) = (ctx.clone(), name.clone());
