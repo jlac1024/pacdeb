@@ -139,6 +139,12 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox) {
             });
             row.add_suffix(&b);
         }
+        if apps::installed_version(pkg).is_some() {
+            let b = gtk::Button::builder().icon_name("view-refresh-symbolic").tooltip_text("Reinstall").valign(gtk::Align::Center).css_classes(["flat"]).build();
+            let (ctx, name, manual) = (ctx.clone(), name.clone(), app.source.kind() == "manual");
+            b.connect_clicked(move |_| confirm_reinstall(&ctx, &name, manual));
+            row.add_suffix(&b);
+        }
         let edit = gtk::Button::builder().icon_name("document-edit-symbolic").tooltip_text("Edit").valign(gtk::Align::Center).css_classes(["flat"]).build();
         edit.connect_clicked({
             let (ctx, name) = (ctx.clone(), name.clone());
@@ -153,6 +159,32 @@ fn fill_list(ctx: &Rc<Ctx>, list: &gtk::ListBox) {
         row.add_suffix(&remove);
         list.append(&row);
     }
+}
+
+/// Reinstall the last build, or build again first (to pick up fixes in pacdeb). A
+/// manual app has no source to rebuild from, so it asks for the .deb.
+fn confirm_reinstall(ctx: &Rc<Ctx>, name: &str, manual: bool) {
+    let rebuild_from = if manual { "from a .deb file you pick" } else { "from its source" };
+    let body = format!("Reinstall puts the last package pacdeb built back in place.\nRebuild builds {name} again {rebuild_from} first, picking up fixes in pacdeb.");
+    let alert = adw::AlertDialog::new(Some(&format!("Reinstall {name}?")), Some(&body));
+    alert.add_response("cancel", "Cancel");
+    alert.add_response("rebuild", "Rebuild");
+    alert.add_response("reinstall", "Reinstall");
+    alert.set_response_appearance("reinstall", adw::ResponseAppearance::Suggested);
+    alert.set_close_response("cancel");
+    let (ctx2, name) = (ctx.clone(), name.to_string());
+    alert.connect_response(None, move |_, response| match response {
+        "reinstall" => run::cli_and_install(&ctx2, &format!("Reinstalling {name}"), &["install", &name]),
+        "rebuild" if manual => {
+            let (ctx3, name) = (ctx2.clone(), name.clone());
+            crate::convert_page::pick_deb(&ctx2, move |path| {
+                run::cli_and_install(&ctx3, &format!("Rebuilding {name}"), &["upgrade", &name, "--file", &path.display().to_string()]);
+            });
+        }
+        "rebuild" => run::cli_and_install(&ctx2, &format!("Rebuilding {name}"), &["install", &name, "--rebuild"]),
+        _ => {}
+    });
+    alert.present(Some(&ctx.window));
 }
 
 /// The last build's warnings the person has not accepted, with a button to accept them.

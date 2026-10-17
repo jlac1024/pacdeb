@@ -99,6 +99,7 @@ fn fish() -> String {
          complete -c pacdeb -n '__pacdeb_after install; or __pacdeb_after show' -a '(__pacdeb_names installable)'\n\
          complete -c pacdeb -n '__pacdeb_after install' -a '(__fish_complete_suffix .deb)'\n\
          complete -c pacdeb -n '__pacdeb_after install' -l direct -d 'Write the package directly instead of running makepkg'\n\
+         complete -c pacdeb -n '__pacdeb_after install' -l rebuild -d 'Build again instead of reusing the last build'\n\
          complete -c pacdeb -n '__pacdeb_after inspect; or __pacdeb_after convert' -a '(__fish_complete_suffix .deb)'\n\
          complete -c pacdeb -n '__pacdeb_after convert' -l dry-run -d 'Show what would be built'\n\
          complete -c pacdeb -n '__pacdeb_after convert' -l direct -d 'Write the package directly'\n\
@@ -155,7 +156,7 @@ _pacdeb() {
     local debs=0
     case $cmd in
         install)
-            if [[ $cur == -* ]]; then words="--direct"; else words=$(_pacdeb_names installable); debs=1; fi ;;
+            if [[ $cur == -* ]]; then words="--rebuild --direct"; else words=$(_pacdeb_names installable); debs=1; fi ;;
         show) words=$(_pacdeb_names installable) ;;
         inspect) debs=1 ;;
         convert)
